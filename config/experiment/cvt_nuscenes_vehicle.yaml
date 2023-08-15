@@ -3,10 +3,20 @@ defaults:
   - override /model: cvt
   - override /data: nuscenes_vehicle
 
-  - override /loss: center_loss
-  - override /metrics: visibility_metrics
+  - override /loss: multiclass_loss
+  - override /metrics: multiclass_metrics
 
 model:
   outputs:
     bev: [0, 1]
-    center: [1, 2]
+
+visualization:
+  flip: False
+  key: ['bev']
+    
+data:
+  num_classes: 15
+  image:
+    h: 448
+    w: 800
+  

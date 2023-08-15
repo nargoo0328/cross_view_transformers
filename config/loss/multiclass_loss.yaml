@@ -1,0 +1,58 @@
+ped_weight: 20.0
+ped:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: [[9]]
+  gamma: 2.0
+  alpha: -1.0
+  min_visibility: 2
+  key: ped
+
+visible_weight: 5.0
+visible:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: ${data.label_indices}
+  gamma: 2.0
+  alpha: -1.0
+  min_visibility: 2
+
+# center_weight: 0.0
+# center:
+#   _target_: cross_view_transformer.losses.CenterLoss
+
+#   gamma: 2.0
+#   min_visibility: 2
+
+STATIC_weight: 0.1
+STATIC:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: [[0,1]]
+  gamma: 2.0
+  alpha: -1.0
+  key: STATIC
+
+DIVIDER_weight: 1.0
+DIVIDER:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: [[2,3]]
+  gamma: 2.0
+  alpha: -1.0
+  key: DIVIDER
+
+# pedDice_weight: 0.1
+# pedDice:
+#   _target_: cross_view_transformer.losses.diceLoss
+
+#   label_indices: [[9]]
+#   min_visibility: 2
+#   key: ped
+
+# visibleDice_weight: 0.1
+# visibleDice:
+#   _target_: cross_view_transformer.losses.diceLoss
+
+#   label_indices: ${data.label_indices}
+#   min_visibility: 2

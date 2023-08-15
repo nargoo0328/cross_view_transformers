@@ -58,8 +58,8 @@ def setup_experiment(cfg: DictConfig) -> Tuple[ModelModule, DataModule, Callable
     return model_module, data_module, viz_fn
 
 
-def load_backbone(checkpoint_path: str, prefix: str = 'backbone'):
-    checkpoint = torch.load(checkpoint_path)
+def load_backbone(checkpoint_path: str, prefix: str = 'backbone',device=torch.device('cpu')):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
 
     cfg = DictConfig(checkpoint['hyper_parameters'])
 

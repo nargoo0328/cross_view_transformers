@@ -5,8 +5,8 @@ defaults:
   - data: ???
   - visualization: null
 
-  - loss: default_loss
-  - metrics: default_metrics
+  - loss: null
+  - metrics: null
 
 experiment:
   project: cross_view_transformers_test               # wandb project
@@ -14,14 +14,15 @@ experiment:
   save_dir: ${hydra:runtime.cwd}/logs/                # log directory, will be created
 
   seed: 2022
-  checkpoint_interval: 1000
+  checkpoint_interval: 500
   log_image_interval: 500
+  save_last: True
 
 loader:
-  batch_size: 4
+  batch_size: 2 # 8x3
   num_workers: 4
   pin_memory: True
-  prefetch_factor: 4
+  prefetch_factor: 2
 
 # AdamW
 optimizer:
@@ -39,8 +40,8 @@ scheduler:
 
 # lightning trainer
 trainer:
-  max_steps: 30001
-  log_every_n_steps: 50
+  max_steps: 80001
+  log_every_n_steps: 20
 
   gpus: -1
   precision: 32

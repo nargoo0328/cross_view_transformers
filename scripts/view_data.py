@@ -33,7 +33,6 @@ def main(cfg):
 
     for batch in tqdm(loader):
         img = np.vstack(viz(batch))
-
         cv2.imshow('debug', cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         cv2.waitKey(1)
 

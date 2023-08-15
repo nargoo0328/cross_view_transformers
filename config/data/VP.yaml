@@ -1,0 +1,6 @@
+# @package _global_
+defaults:
+  - /data/nuscenes
+
+data:
+  label_indices: [[4, 5, 6, 7, 8, 10, 11]]

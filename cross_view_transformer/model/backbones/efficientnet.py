@@ -127,16 +127,16 @@ if __name__ == '__main__':
         record = list()
 
         x = conv(dummy)
+        print(x.shape)
         px = x
         pi = 0
 
         # Terminal early to save computation
         for i, block in enumerate(net._blocks):
             x = block(x, i * drop)
-
             if px.shape[-2:] != x.shape[-2:]:
                 record.append((f'reduction_{len(record)+1}', (pi, i+1)))
-
+                print(len(record)+1,x.shape)
                 pi = i + 1
                 px = x
 

@@ -1,0 +1,17 @@
+DIVIDER_weight: 1.0
+DIVIDER:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: [[2,3]]
+  gamma: 2.0
+  alpha: -1.0
+  key: DIVIDER
+
+bce_weight: 0.1
+bce:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: [[2,3]]
+  gamma: 0.0
+  alpha: -1.0
+  key: DIVIDER

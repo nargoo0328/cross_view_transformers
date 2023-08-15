@@ -15,15 +15,22 @@ def get_split(split, dataset_name):
     return split_path.read_text().strip().split('\n')
 
 
-def get_view_matrix(h=200, w=200, h_meters=100.0, w_meters=100.0, offset=0.0):
+def get_view_matrix(h=200, w=200, h_meters=100.0, w_meters=100.0, offset=0.0, flip=False):
     sh = h / h_meters
     sw = w / w_meters
 
-    return np.float32([
-        [ 0., -sw,          w/2.],
-        [-sh,  0., h*offset+h/2.],
-        [ 0.,  0.,            1.]
-    ])
+    if flip:
+        return np.float32([
+            [ sw, 0,          w/2.],
+            [0,  -sh, h*offset+h/2.],
+            [ 0.,  0.,            1.]
+        ])
+    else:
+        return np.float32([
+            [ 0., -sw,          w/2.],
+            [-sh,  0., h*offset+h/2.],
+            [ 0.,  0.,            1.]
+        ])
 
 
 def get_transformation_matrix(R, t, inv=False):

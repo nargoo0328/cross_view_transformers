@@ -5,7 +5,6 @@ from pathlib import Path
 from .common import get_split
 from .transforms import Sample, LoadDataTransform
 
-
 def get_data(
     dataset_dir,
     labels_dir,
@@ -15,22 +14,29 @@ def get_data(
     augment='none',
     image=None,                         # image config
     dataset='unused',                   # ignore
+    pts_file='',
     **dataset_kwargs
 ):
     dataset_dir = Path(dataset_dir)
     labels_dir = Path(labels_dir)
-
     # Override augment if not training
     augment = 'none' if split != 'train' else augment
-    transform = LoadDataTransform(dataset_dir, labels_dir, image, num_classes, augment)
+    transform = LoadDataTransform(dataset_dir, labels_dir, image, num_classes,pts_file, augment)
 
     # Format the split name
     split = f'mini_{split}' if version == 'v1.0-mini' else split
     split_scenes = get_split(split, 'nuscenes')
 
-    return [NuScenesGeneratedDataset(s, labels_dir, transform=transform) for s in split_scenes]
+    out = []
+    for s in split_scenes:
+        tmp_dataset = NuScenesGeneratedDataset(s, labels_dir, transform=transform)
+        
+        if tmp_dataset.flag :
+            out.append(tmp_dataset)
+    return out
+    # return [NuScenesGeneratedDataset(s, labels_dir, transform=transform) for s in split_scenes]
 
-
+# 1045
 class NuScenesGeneratedDataset(torch.utils.data.Dataset):
     """
     Lightweight dataset wrapper around contents of a JSON file
@@ -38,10 +44,20 @@ class NuScenesGeneratedDataset(torch.utils.data.Dataset):
     Contains all camera info, image_paths, label_paths ...
     that are to be loaded in the transform
     """
+    
     def __init__(self, scene_name, labels_dir, transform=None):
         self.samples = json.loads((Path(labels_dir) / f'{scene_name}.json').read_text())
         self.transform = transform
-
+        self.flag = self.check_data()
+        
+    def check_data(self):
+        for sample in self.samples:
+            data = Sample(**sample)
+            flag = self.transform.check_data(data)
+            # print(f"current count/total count: {count}/{total_count}",end='\r')
+            if not flag:
+                return False
+        return  True
     def __len__(self):
         return len(self.samples)
 

@@ -1,0 +1,26 @@
+# @package _global_
+defaults:
+  - override /data: nuscenes
+  - override /visualization: nuscenes_viz
+  - override /loss: divider_loss
+  - override /model: cvt
+
+trainer:
+  max_steps: 65001
+
+model:
+  outputs:
+    DIVIDER: [0, 1]
+
+visualization:
+  flip: True
+  key: ['DIVIDER']
+
+metrics:
+  iou:
+    _target_: cross_view_transformer.metrics.IoUMetric
+    label_indices: [[2,3]]
+    key: DIVIDER
+
+data:
+  num_classes: 15

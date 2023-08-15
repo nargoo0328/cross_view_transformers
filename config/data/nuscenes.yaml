@@ -2,7 +2,7 @@ dataset: 'nuscenes_generated'           # do not modify :)
 num_classes: 12                         # do not modify :)
 
 # used to get_split
-version: 'v1.0-trainval'                # 'v1.0-mini' for debugging
+version: 'v1.0-trainval'                # 'v1.0-mini' for debugging trainval
 dataset_dir: ???
 labels_dir: ???
 
@@ -26,6 +26,6 @@ bev:
 # input parameters (not used in label generation)
 augment: 'none'
 image:
-  h: 224
-  w: 480
+  h: 448 #224
+  w: 800 #480
   top_crop: 46

@@ -25,12 +25,10 @@ class ModelModule(pl.LightningModule):
         loss, loss_details = self.loss_func(pred, batch)
 
         self.metrics.update(pred, batch)
-
         if self.trainer is not None:
-            self.log(f'{prefix}/loss', loss.detach(), on_step=on_step, on_epoch=True)
+            self.log(f'{prefix}/loss', loss.detach(), on_step=on_step, on_epoch=True,logger=True)
             self.log_dict({f'{prefix}/loss/{k}': v.detach() for k, v in loss_details.items()},
-                          on_step=on_step, on_epoch=True)
-
+                          on_step=on_step, on_epoch=True,logger=True)
         # Used for visualizations
         if return_output:
             return {'loss': loss, 'batch': batch, 'pred': pred}
@@ -38,12 +36,12 @@ class ModelModule(pl.LightningModule):
         return {'loss': loss}
 
     def training_step(self, batch, batch_idx):
-        return self.shared_step(batch, 'train', True,
-                                batch_idx % self.hparams.experiment.log_image_interval == 0)
+        return self.shared_step(batch, 'train', on_step = True,
+                                return_output = batch_idx % self.hparams.experiment.log_image_interval == 0)
 
     def validation_step(self, batch, batch_idx):
-        return self.shared_step(batch, 'val', False,
-                                batch_idx % self.hparams.experiment.log_image_interval == 0)
+        return self.shared_step(batch, 'val', on_step = False,
+                                return_output = batch_idx % self.hparams.experiment.log_image_interval == 0)
 
     def on_validation_start(self) -> None:
         self._log_epoch_metrics('train')
@@ -68,9 +66,10 @@ class ModelModule(pl.LightningModule):
         for key, value in metrics.items():
             if isinstance(value, dict):
                 for subkey, val in value.items():
-                    self.log(f'{prefix}/metrics/{key}{subkey}', val)
+                    # print(f'{prefix}/metrics/{key}{subkey}: {val}')
+                    self.log(f'{prefix}/metrics/{key}{subkey}', val,logger=True)
             else:
-                self.log(f'{prefix}/metrics/{key}', value)
+                self.log(f'{prefix}/metrics/{key}', value,logger=True)
 
         self.metrics.reset()
 

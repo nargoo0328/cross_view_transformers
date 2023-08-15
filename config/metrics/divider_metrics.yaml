@@ -1,0 +1,24 @@
+iou_STATIC:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[0,1]]
+  key: STATIC
+
+iou_DIVIDER:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[2,3]]
+  key: DIVIDER
+
+iou_PED:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[12]]
+  key: PED
+
+iou_WALKWAY:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[13]]
+  key: WALKWAY
+
+iou_CARPARK:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[14]]
+  key: CARPARK

@@ -1,0 +1,22 @@
+# @package _global_
+defaults:
+  - override /model: cvt
+  - override /data: nuscenes_vehicle
+
+  - override /loss: multiclass_loss
+  - override /metrics: multiclass_metrics
+
+model:
+  outputs:
+    bev: [0, 1]
+    ped: [1, 2]
+    STATIC: [2, 3]
+    DIVIDER: [3, 4]
+
+visualization:
+  flip: False
+  key: ['STATIC','DIVIDER','bev','ped']
+  # key: ['bev']
+    
+data:
+  num_classes: 15

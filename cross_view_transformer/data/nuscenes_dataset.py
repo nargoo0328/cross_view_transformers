@@ -10,7 +10,8 @@ from shapely.geometry import MultiPolygon
 
 from .common import INTERPOLATION, get_view_matrix, get_pose, get_split
 from .transforms import Sample, SaveDataTransform
-
+import os
+from functools import reduce
 
 STATIC = ['lane', 'road_segment']
 DIVIDER = ['road_divider', 'lane_divider']
@@ -19,11 +20,24 @@ DYNAMIC = [
     'trailer', 'construction',
     'pedestrian',
     'motorcycle', 'bicycle',
+    'emergency',
 ]
-
-CLASSES = STATIC + DIVIDER + DYNAMIC
+STATIC2 = ['ped_crossing','walkway']#,'carpark_area']
+topology = True
+if topology:
+    CLASSES = STATIC + DIVIDER + DYNAMIC + STATIC2
+else:
+    CLASSES = STATIC + DIVIDER + DYNAMIC 
+     
 NUM_CLASSES = len(CLASSES)
 
+def mask_out(out_l,y=[0,200],x=[0,200]):
+    mask = np.ones(out_l.shape[1], dtype=bool)
+    mask = np.logical_and(mask, out_l[0, :] < y[1])
+    mask = np.logical_and(mask, out_l[0, :] >= y[0])
+    mask = np.logical_and(mask, out_l[1, :] >= x[0])
+    mask = np.logical_and(mask, out_l[1, :] < x[1])
+    return mask
 
 def get_data(
     dataset_dir,
@@ -51,7 +65,6 @@ def get_data(
     for scene_name, scene_record in helper.get_scenes():
         if scene_name not in split_scenes:
             continue
-
         data = NuScenesDataset(scene_name, scene_record, helper,
                                transform=transform, **dataset_kwargs)
         result.append(data)
@@ -110,6 +123,7 @@ class NuScenesSingleton:
 class NuScenesDataset(torch.utils.data.Dataset):
     CAMERAS = ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
                'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT']
+    RADARS = ["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
 
     def __init__(
         self,
@@ -126,7 +140,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
         self.nusc = helper.nusc
         self.nusc_map = helper.get_map(scene_record['log_token'])
 
-        self.view = get_view_matrix(**bev)
+        self.view = get_view_matrix(flip=False,**bev)
         self.bev_shape = (bev['h'], bev['w'])
 
         self.samples = self.parse_scene(scene_record, cameras)
@@ -150,7 +164,12 @@ class NuScenesDataset(torch.utils.data.Dataset):
 
     def parse_sample_record(self, sample_record, camera_rig):
         lidar_record = self.nusc.get('sample_data', sample_record['data']['LIDAR_TOP'])
+
+        # calibrated_lidar = self.nusc.get('calibrated_sensor', lidar_record['calibrated_sensor_token'])
         egolidar = self.nusc.get('ego_pose', lidar_record['ego_pose_token'])
+
+        # world_from_lidarflat = self.parse_pose(calibrated_lidar, flat=True)
+        # lidarflat_from_world = self.parse_pose(calibrated_lidar, flat=True,inv=True)
 
         world_from_egolidarflat = self.parse_pose(egolidar, flat=True)
         egolidarflat_from_world = self.parse_pose(egolidar, flat=True, inv=True)
@@ -171,7 +190,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
             cam_from_egocam = self.parse_pose(cam, inv=True)
             egocam_from_world = self.parse_pose(egocam, inv=True)
 
-            E = cam_from_egocam @ egocam_from_world @ world_from_egolidarflat
+            E = cam_from_egocam @ egocam_from_world @ world_from_egolidarflat# @ world_from_lidarflat
             I = cam['camera_intrinsic']
 
             full_path = Path(self.nusc.get_sample_data_path(cam_token))
@@ -185,6 +204,9 @@ class NuScenesDataset(torch.utils.data.Dataset):
         return {
             'scene': self.scene_name,
             'token': sample_record['token'],
+
+            # 'pose': (world_from_egolidarflat @ world_from_lidarflat).tolist(),
+            # 'pose_inverse': (lidarflat_from_world @ egolidarflat_from_world).tolist(),
 
             'pose': world_from_egolidarflat.tolist(),
             'pose_inverse': egolidarflat_from_world.tolist(),
@@ -208,7 +230,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
         visibility = np.full((h, w), 255, dtype=np.uint8)
 
         coords = np.stack(np.meshgrid(np.arange(w), np.arange(h)), -1).astype(np.float32)
-
+        count = 0
         for ann, p in zip(annotations, self.convert_to_box(sample, annotations)):
             box = p[:2, :4]
             center = p[:2, 4]
@@ -223,7 +245,8 @@ class NuScenesDataset(torch.utils.data.Dataset):
                 continue
 
             sigma = 1
-            segmentation[mask] = 255
+            segmentation[mask] = count + 1
+            count += 1
             center_offset[mask] = center[None] - coords[mask]
             center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (sigma ** 2))
 
@@ -287,12 +310,14 @@ class NuScenesDataset(torch.utils.data.Dataset):
             a = self.nusc.get('sample_annotation', ann_token)
             idx = self.get_category_index(a['category_name'], categories)
 
+            if int(a['visibility_token']) == 1:
+                continue
             if idx is not None:
                 result[idx].append(a)
 
         return result
 
-    def get_line_layers(self, sample, layers, patch_radius=150, thickness=1):
+    def get_line_layers(self, sample, layers, patch_radius=150, thickness=2):
         h, w = self.bev_shape[:2]
         V = self.view
         M_inv = np.array(sample['pose_inverse'])
@@ -302,28 +327,37 @@ class NuScenesDataset(torch.utils.data.Dataset):
             [0, 0, 0, 1],
         ])
 
-        box_coords = (sample['pose'][0][-1] - patch_radius, sample['pose'][1][-1] - patch_radius,
-                      sample['pose'][0][-1] + patch_radius, sample['pose'][1][-1] + patch_radius)
-        records_in_patch = self.nusc_map.get_records_in_patch(box_coords, layers, 'intersect')
+        # box_coords = (sample['pose'][0][-1] - patch_radius, sample['pose'][1][-1] - patch_radius,
+        #               sample['pose'][0][-1] + patch_radius, sample['pose'][1][-1] + patch_radius)
+        # records_in_patch = self.nusc_map.get_records_in_patch(box_coords, layers, 'intersect')
 
-        result = list()
+        # result = list()
 
-        for layer in layers:
-            render = np.zeros((h, w), dtype=np.uint8)
+        # for layer in layers:
+        #     render = np.zeros((h, w), dtype=np.uint8)
 
-            for r in records_in_patch[layer]:
-                polygon_token = self.nusc_map.get(layer, r)
-                line = self.nusc_map.extract_line(polygon_token['line_token'])
+        #     for r in records_in_patch[layer]:
+        #         polygon_token = self.nusc_map.get(layer, r)
+        #         line = self.nusc_map.extract_line(polygon_token['line_token'])
 
-                p = np.float32(line.xy)                                     # 2 n
-                p = np.pad(p, ((0, 1), (0, 0)), constant_values=0.0)        # 3 n
-                p = np.pad(p, ((0, 1), (0, 0)), constant_values=1.0)        # 4 n
-                p = V @ S @ M_inv @ p                                       # 3 n
-                p = p[:2].round().astype(np.int32).T                        # n 2
+        #         p = np.float32(line.xy)                                     # 2 n
+        #         p = np.pad(p, ((0, 1), (0, 0)), constant_values=0.0)        # 3 n
+        #         p = np.pad(p, ((0, 1), (0, 0)), constant_values=1.0)        # 4 n
+        #         p = V @ S @ M_inv @ p                                       # 3 n
+        #         p = p[:2].round().astype(np.int32).T                        # n 2
 
-                cv2.polylines(render, [p], False, 1, thickness=thickness)
+        #         cv2.polylines(render, [p], False, 1, thickness=thickness)
 
-            result.append(render)
+        #     result.append(render)
+
+        lidar2global = (V @ S @ M_inv)
+        rotation = lidar2global[:3, :3]
+        v = np.dot(rotation, np.array([1, 0, 0]))
+        yaw = np.arctan2(v[1], v[0])
+        angle = (yaw / np.pi * 180)
+
+        map_mask = self.nusc_map.get_map_mask((sample['pose'][0][-1],sample['pose'][1][-1],100,100), angle, layers, (h,w))
+        result = [np.flipud(i) for i in map_mask]
 
         return 255 * np.stack(result, -1)
 
@@ -373,7 +407,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
                     cv2.fillPoly(render, interiors, 0, INTERPOLATION)
 
             result.append(render)
-
+        
         return 255 * np.stack(result, -1)
 
     def get_dynamic_layers(self, sample, anns_by_category):
@@ -392,6 +426,49 @@ class NuScenesDataset(torch.utils.data.Dataset):
 
         return 255 * np.stack(result, -1)
 
+    def get_radar(self,sample,use_radar_filters = False):
+        from nuscenes.utils.data_classes import RadarPointCloud
+        sample_rec = self.nusc.get('sample', sample['token'])
+        min_distance = 1.0
+
+        if use_radar_filters:
+            RadarPointCloud.default_filters()
+        else:
+            RadarPointCloud.disable_filters()
+
+        out_l = []
+        for radar_name in self.RADARS:
+            sample_data_token = sample_rec['data'][radar_name]
+            current_sd_rec = self.nusc.get('sample_data', sample_data_token)
+            # Load up the pointcloud and remove points close to the sensor.
+            current_pc = RadarPointCloud.from_file(os.path.join(self.nusc.dataroot, current_sd_rec['filename']))
+            current_pc.remove_close(min_distance)
+
+            # Get past pose.
+            current_pose_rec = self.nusc.get('ego_pose', current_sd_rec['ego_pose_token'])
+            global_from_car = self.parse_pose(current_pose_rec)
+            # Homogeneous transformation matrix from sensor coordinate frame to ego car frame.
+            current_cs_rec = self.nusc.get('calibrated_sensor', current_sd_rec['calibrated_sensor_token'])
+            car_from_current = self.parse_pose(current_cs_rec)
+
+            # Fuse four transformation matrices into one and perform transform. lidar_sensor, lidar ego, radar ego, radar sensor
+            trans_matrix = reduce(np.dot, [sample['pose_inverse'],global_from_car, car_from_current]) 
+            current_pc.transform(trans_matrix)
+            out_l.append(current_pc.points)
+        out_lidar = np.concatenate(out_l,1)
+        V = self.view
+        S = np.array([
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 0, 1],
+                ])
+        out_lidar[:3] = V @ S @ np.vstack((out_lidar[:3],np.ones(out_lidar.shape[1])))
+        mask = mask_out(out_lidar)
+        out_lidar = out_lidar[:,mask]
+        radar_map = np.zeros((200,200,16),dtype=float)
+        radar_map[(out_lidar[1,:].astype(int)),(out_lidar[0,:].astype(int))] = np.transpose(np.vstack((np.ones((1,out_lidar.shape[1]),dtype=float),out_lidar[3:,:])))
+        return radar_map, out_lidar
+    
     def __len__(self):
         return len(self.samples)
 
@@ -401,23 +478,35 @@ class NuScenesDataset(torch.utils.data.Dataset):
         # Raw annotations
         anns_dynamic = self.get_annotations_by_category(sample, DYNAMIC)
         anns_vehicle = self.get_annotations_by_category(sample, ['vehicle'])[0]
+        anns_ped = self.get_annotations_by_category(sample, ['pedestrian'])[0]
 
         static = self.get_static_layers(sample, STATIC)                             # 200 200 2
         dividers = self.get_line_layers(sample, DIVIDER)                            # 200 200 2
         dynamic = self.get_dynamic_layers(sample, anns_dynamic)                     # 200 200 8
-        bev = np.concatenate((static, dividers, dynamic), -1)                       # 200 200 12
 
+        if topology:
+            static_v2 = self.get_static_layers(sample, STATIC2)                             # 200 200 2
+            # dividers_v2 = self.get_line_layers(sample, DIVIDER_v2)     
+
+            bev = np.concatenate((static, dividers, dynamic,static_v2), -1)                     
+        else:
+            bev = np.concatenate((static, dividers, dynamic), -1)                       # 200 200 12
         assert bev.shape[2] == NUM_CLASSES
 
         # Additional labels for vehicles only.
         aux, visibility = self.get_dynamic_objects(sample, anns_vehicle)
+        aux_ped, visibility_ped = self.get_dynamic_objects(sample, anns_ped)
+        radar, radar_points = self.get_radar(sample)
 
         # Package the data.
         data = Sample(
             view=self.view.tolist(),
             bev=bev,
             aux=aux,
+            aux_ped=aux_ped,
             visibility=visibility,
+            visibility_ped=visibility_ped,
+            radar=[radar, radar_points],
             **sample
         )
 

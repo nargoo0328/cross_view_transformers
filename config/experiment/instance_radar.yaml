@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - override /model: instance
+  - override /data: nuscenes_vehicle
+  - override /loss: instance_loss
+  - override /metrics: instance_metric
+
+visualization:
+  flip: True
+  key: ['vehicle','ped']

@@ -1,0 +1,24 @@
+iou_vehicle:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: ${data.label_indices}
+  min_visibility: 2
+  is_ce: True
+
+iou_ped:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[9]]
+  min_visibility: 2
+  key: ped
+  is_ce: True
+
+iou_STATIC:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[0,1]]
+  key: STATIC
+  is_ce: True
+
+iou_DIVIDER:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[2,3]]
+  key: DIVIDER
+  is_ce: True

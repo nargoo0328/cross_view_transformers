@@ -54,7 +54,7 @@ def main(cfg):
     labels_dir = Path(cfg.data.labels_dir)
     labels_dir.mkdir(parents=False, exist_ok=True)
 
-    for split in ['train', 'val']:
+    for split in ['val', 'train']:
         print(f'Generating split: {split}')
 
         for episode in tqdm(data.get_split(split, loader=False), position=0, leave=False):
@@ -66,7 +66,6 @@ def main(cfg):
 
             for i, batch in enumerate(tqdm(loader, position=1, leave=False)):
                 info.extend(batch)
-
                 # Load data from disk to test if it was saved correctly
                 if i == 0 and viz_fn is not None:
                     unbatched = [load_xform(s) for s in batch]

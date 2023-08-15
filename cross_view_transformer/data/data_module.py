@@ -7,7 +7,6 @@ from . import get_dataset_module_by_name
 class DataModule(pl.LightningDataModule):
     def __init__(self, dataset: str, data_config: dict, loader_config: dict):
         super().__init__()
-
         self.get_data = get_dataset_module_by_name(dataset).get_data
 
         self.data_config = data_config
@@ -31,5 +30,17 @@ class DataModule(pl.LightningDataModule):
     def train_dataloader(self, shuffle=True):
         return self.get_split('train', loader=True, shuffle=shuffle)
 
-    def val_dataloader(self, shuffle=True):
+    def val_dataloader(self, shuffle=False):
         return self.get_split('val', loader=True, shuffle=shuffle)
+    
+class custom_DataModule(pl.LightningDataModule):
+    def __init__(self, train, test):
+        super().__init__()
+        self.train = train
+        self.test = test
+
+    def train_dataloader(self):
+        return self.train
+
+    def val_dataloader(self):
+        return self.test

@@ -37,9 +37,9 @@ class DecoderBlock(torch.nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, dim, blocks, residual=True, factor=2):
+    def __init__(self, dim, blocks, residual=True, factor=2, fuse=False):
         super().__init__()
-
+        self.fuse = fuse
         layers = list()
         channels = dim
 
