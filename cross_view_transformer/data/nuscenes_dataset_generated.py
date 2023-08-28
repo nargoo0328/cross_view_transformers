@@ -30,9 +30,7 @@ def get_data(
     out = []
     for s in split_scenes:
         tmp_dataset = NuScenesGeneratedDataset(s, labels_dir, transform=transform)
-        
-        if tmp_dataset.flag :
-            out.append(tmp_dataset)
+        out.append(tmp_dataset)
     return out
     # return [NuScenesGeneratedDataset(s, labels_dir, transform=transform) for s in split_scenes]
 
@@ -48,16 +46,7 @@ class NuScenesGeneratedDataset(torch.utils.data.Dataset):
     def __init__(self, scene_name, labels_dir, transform=None):
         self.samples = json.loads((Path(labels_dir) / f'{scene_name}.json').read_text())
         self.transform = transform
-        self.flag = self.check_data()
-        
-    def check_data(self):
-        for sample in self.samples:
-            data = Sample(**sample)
-            flag = self.transform.check_data(data)
-            # print(f"current count/total count: {count}/{total_count}",end='\r')
-            if not flag:
-                return False
-        return  True
+
     def __len__(self):
         return len(self.samples)
 
