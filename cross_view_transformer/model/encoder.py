@@ -83,44 +83,6 @@ class CrossAttention(nn.Module):
         # self.attention.append(att)
         return z    
 
-    def forward_radar(self,q, k, v, skip=None):
-        b, _, H, W = q.shape
-        # Move feature dim to last for multi-head proj
-        q = rearrange(q, 'b d H W -> b (H W) d')
-        k = rearrange(k, 'b d h w -> b (h w) d')
-        v = rearrange(v, 'b d h w -> b (h w) d')
-
-        # print(q.shape,k.shape) #torch.Size([1, 6, 625, 128]) torch.Size([1, 6, 6720, 128])
-        # Project with multiple heads
-        q = self.to_q(q)                                # b (n H W) (heads dim_head)
-        k = self.to_k(k)                                # b (n h w) (heads dim_head)
-        v = self.to_v(v)                                # b (n h w) (heads dim_head)
-        # print(q.shape,k.shape) # torch.Size([1, 6, 625, 128]) torch.Size([1, 6, 6720, 128])
-        # Group the head dim with batch dim
-        q = rearrange(q, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
-        k = rearrange(k, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
-        v = rearrange(v, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
-        # Dot product attention along cameras
-        dot = self.scale * torch.einsum('b Q d, b K d -> b Q K', q, k)
-        att = dot.softmax(dim=-1)
-
-        # Combine values (image level features).
-        a = torch.einsum('b Q K, b K d -> b Q d', att, v)
-        a = rearrange(a, '(b m) ... d -> b ... (m d)', m=self.heads, d=self.dim_head)
-
-        # Combine multiple heads
-        z = self.proj(a)
-
-        # Optional skip connection
-        if skip is not None:
-            z = z + rearrange(skip, 'b d H W -> b (H W) d')
-
-        z = self.prenorm(z)
-        z = z + self.mlp(z)
-        z = self.postnorm(z)
-        z = rearrange(z, 'b (H W) d -> b d H W', H=H, W=W)
-        return z    
-
 class CrossAttentionMaskView(nn.Module):
     def __init__(self, dim, heads, dim_head, qkv_bias, norm=nn.LayerNorm):
         super().__init__()
@@ -343,67 +305,6 @@ class CrossViewAttention(nn.Module):
         points_tmp = view_points(out_l_2_tmp, I)
         points_tmp = image_(points_tmp,depths)
 
-class Radar_stream(nn.Module):
-    def __init__(
-        self,
-        feat_dim,
-        dim,
-        heads = 4,
-        dim_head = 32,
-        qkv_bias = True,
-        skip = True,
-        **kwargs
-    ):
-        super().__init__()
-
-        self.skip = skip
-        self.dim = dim
-        self.bev_embed = nn.Conv2d(2, dim, 1)
-        # self.k_embed = nn.Conv2d(2, dim, 1, bias=False)
-        self.cross_attend = CrossAttention(dim, heads, dim_head, qkv_bias)
-
-        self.feature_proj = nn.Sequential(
-            nn.BatchNorm2d(feat_dim),
-            nn.ReLU(),
-            nn.Conv2d(feat_dim, dim, 1, bias=False))
-
-        self.feature_linear = nn.Sequential(
-            nn.BatchNorm2d(feat_dim),
-            nn.ReLU(),
-            nn.Conv2d(feat_dim, dim, 1, bias=False))
-
-        # pos = positionalencoding2d(dim,h,w)
-
-        # self.register_buffer('pos', pos, persistent=False)
-        
-
-    def forward(self,x,bev_embedding,feature):
-        """
-        x: (b, d, H, W)
-        feature: (b, d, h, w)
-        bev: (b, d, H, W)
-        Returns: (b, d, H, W)
-        """
-        b = x.shape[0]
-        # pos = self.pos[None]
-        # pos = repeat(pos, '1 ... -> b ...', b=b)
-
-        pos_bev = bev_embedding.grid[:2]                                                    # 2 H W
-        pos_bev = self.bev_embed(pos_bev[None])
-        # pos_bev = pos_bev / (pos_bev.norm(dim=1, keepdim=True) + 1e-7)
-        pos_bev = repeat(pos_bev,'1 ... -> b ...', b=b)
-
-        pos_radar = bev_embedding.grid_radar[:2]                                            # 2 H W
-        pos_radar = self.bev_embed(pos_radar[None])
-        # pos_radar = pos_radar / (pos_radar.norm(dim=1, keepdim=True) + 1e-7)
-        pos_radar = repeat(pos_radar,'1 ... -> b ...', b=b)
-
-        query = pos_bev + x
-        key =  pos_radar + self.feature_proj(feature)
-        val = self.feature_linear(feature)
-        return self.cross_attend.forward_radar(query, key, val, skip=x if self.skip else None)
-
-
 class Encoder(nn.Module):
     def __init__(
             self,
@@ -413,14 +314,12 @@ class Encoder(nn.Module):
             dim: int = 128,
             middle: List[int] = [2, 2],
             scale: float = 1.0,
-            radar: bool = False,
             down_feature: bool = False,
     ):
         super().__init__()
 
         self.norm = Normalize()
         self.backbone = backbone
-        self.radar = radar
         if scale < 1.0:
             self.down = lambda x: F.interpolate(x, scale_factor=scale, recompute_scale_factor=False)
         else:
@@ -451,33 +350,13 @@ class Encoder(nn.Module):
 
             layer = nn.Sequential(*[ResNetBottleNeck(dim) for _ in range(num_layers)])
             layers.append(layer)
+
         if down_feature:
             self.down_layer = nn.ModuleList(down_layers)
+
         self.bev_embedding = BEVEmbedding(dim, **bev_embedding)
         self.cross_views = nn.ModuleList(cross_views)
         self.layers = nn.ModuleList(layers)
-
-        if radar:
-            # self.radar_conv = PointNetEncoder(18)
-            self.radar_conv = nn.Sequential(
-                nn.Conv2d(16,dim,3,padding=1),
-                nn.BatchNorm2d(dim),
-                nn.ReLU(),
-                # nn.Conv2d(dim,dim*2,3,padding=1),
-                # nn.BatchNorm2d(dim*2),
-                # nn.ReLU(),
-                nn.Conv2d(dim,dim,3,padding=1),
-                nn.BatchNorm2d(dim),
-                nn.ReLU(),
-            )
-            self.cross_views_radar = Radar_stream(dim, dim, **cross_view)
-            ###
-            # self.pos_fusion = nn.Conv2d(dim*2,dim,1),
-            self.fusion = nn.Sequential(
-                nn.Conv2d(dim*2,dim,3,padding=1),
-                nn.BatchNorm2d(dim),
-                nn.ReLU(),
-            )
 
     def forward(self, batch,inspect=False):
         b, n, _, _, _ = batch['image'].shape
@@ -492,8 +371,6 @@ class Encoder(nn.Module):
         # torch.Size([b, 32, 56, 120]) swinT: torch.Size([b, 96, 64, 176])
         # torch.Size([b, 112, 14, 30]) swinT: torch.Size([b, 384, 16, 44])
 
-        mid_features = None # for debugging if inspect = True return with mid features
-
         x = self.bev_embedding.get_prior()              # d H W
         x = repeat(x, '... -> b ...', b=b)              # b d H W
         for cross_view, feature, layer in zip(self.cross_views, features, self.layers):
@@ -502,19 +379,4 @@ class Encoder(nn.Module):
             x = cross_view(x, self.bev_embedding, feature, I_inv, E_inv)
             x = layer(x)
         
-        if self.radar:
-            radar_bev, mid_radar_features = self.forward_radar(x,batch['radar'],inspect=inspect)
-
-        if self.radar:
-            bev = self.fusion(torch.cat((x,radar_bev),dim=1))
-            if inspect:
-                mid_features = {'img_bev':x,'radar_bev':radar_bev,'fusion_bev':bev,'radar_features':mid_radar_features}
-            return bev, mid_features
-        return x, mid_features
-    
-    def forward_radar(self,x,radar,inspect=False):
-        radar = self.radar_conv(radar)
-        radar_map = self.cross_views_radar(x,self.bev_embedding,radar)
-        # radar = self.pos_fusion(torch.cat((radar,radar_map),dim=1))
-        mid_radar_features = radar if inspect else None
-        return radar_map, mid_radar_features
+        return x
