@@ -9,11 +9,11 @@ from fvcore.nn import sigmoid_focal_loss
 logger = logging.getLogger(__name__)
 
 class SpatialRegressionLoss(torch.nn.Module):
-    def __init__(self, norm, ignore_index=0):
+    def __init__(self, norm, min_visibility=2):
         super(SpatialRegressionLoss, self).__init__()
         # center:2, offset: 1
         self.norm = norm
-        self.ignore_index = ignore_index
+        self.min_visibility = min_visibility
 
         if norm == 1:
             self.loss_fn = F.l1_loss
@@ -33,16 +33,14 @@ class SpatialRegressionLoss(torch.nn.Module):
 
         assert len(prediction.shape) == 4, 'Must be a 4D tensor'
         # ignore_index is the same across all channels
-        mask = target[:, :1] != self.ignore_index
-        if mask.sum() == 0:
-            return prediction.new_zeros(1)[0].float()
 
         loss = self.loss_fn(prediction, target, reduction='none')
-
+        if self.norm == 1:
+            loss = loss.sum(dim=1)[:,None]
         # Sum channel dimension
-        loss = torch.sum(loss, dim=-3, keepdims=True)
-
-        return loss[mask].mean()
+        mask = batch['visibility'] >= self.min_visibility
+        loss = loss[mask[:, None]]
+        return loss.mean()
 
 class SigmoidFocalLoss(torch.nn.Module):
     def __init__(
@@ -132,58 +130,7 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
             loss = loss[mask[:, None]]
 
         return loss.mean()
-
-class cross_entropyloss(torch.nn.Module):
-    def __init__(
-        self,
-        reduction='none'
-    ):
-        super().__init__()
-        weights = [1, 909.6615, 32.2977, 65.4813, 3.5528]
-        class_weights = torch.FloatTensor(weights)
-        self.loss_func = CrossEntropyLoss(weight=class_weights,reduction = reduction)
-
-    def forward(self, pred, label):
-        return self.loss_func(pred, label)
-
-class segmentationLoss(cross_entropyloss):
-    def __init__(
-        self,
-        min_visibility=None,
-        label_indices=[[9],[4,5,6,7,8,10,11],[2,3],[0,1]]
-    ):
-        super().__init__(reduction='none')
-        
-        self.min_visibility = min_visibility
-        self.label_indices = label_indices
-
-    def forward(self, pred, batch):
-        label = batch['bev']
-        b,_,h,w = label.shape
-        if isinstance(pred, dict):
-            # b x 5 x 200 x 200
-            pred = torch.cat((pred['NONE'],pred['ped'],pred['bev'],pred['DIVIDER'],pred['STATIC']),dim=1)
-        # b,12,200,200
-        # bx200x200
-        if self.label_indices is not None:
-            for i,idx in enumerate(self.label_indices):
-                if i == 0:
-                    label_new = label[:, idx].max(1, keepdim=True).values
-                else:
-                    tmp_label = (label[:, idx].max(1, keepdim=True).values)
-                    mask = (~((label_new.long()>=1 )& (tmp_label.long()==1))).long()
-                    label_new += (tmp_label*mask)*(i+1)
-
-
-        label_new = label_new.long()[:,0]
-
-        loss = super().forward(pred, label_new)#.view(b,1,h,w)
-        if self.min_visibility is not None:
-            mask = batch['visibility'] >= self.min_visibility
-            loss = loss[mask]
-
-        return loss.mean()
-
+    
 class CenterLoss(SigmoidFocalLoss):
     def __init__(
         self,
@@ -201,7 +148,7 @@ class CenterLoss(SigmoidFocalLoss):
         loss = super().forward(pred, label)
 
         if self.min_visibility is not None:
-            mask = (batch['visibility'] & batch['visibility_ped']) >= self.min_visibility
+            mask = batch['visibility'] >= self.min_visibility
             loss = loss[mask[:, None]]
 
         return loss.mean()
@@ -239,5 +186,4 @@ class MultipleLoss(torch.nn.ModuleDict):
     def forward(self, pred, batch):
         outputs = {k: v(pred, batch) for k, v in self.items()}
         total = sum(self._weights[k] * o for k, o in outputs.items())
-
         return total, outputs
