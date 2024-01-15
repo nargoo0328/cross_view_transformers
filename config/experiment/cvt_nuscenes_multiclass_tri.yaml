@@ -17,8 +17,8 @@ model:
     tri_view: True
 
     bev_embedding:
-      bev_z: 32
-      z_meters: 8
+      bev_z: 64
+      z_meters: 10
 
 visualization:
   flip: False

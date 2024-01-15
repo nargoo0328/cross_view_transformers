@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torchvision
 from collections import OrderedDict
-from mmseg.apis import init_model
+# from mmseg.apis import init_model
 
 class swinT_backbone(nn.Module):
     def __init__(self,model_name='swinv2_cr_tiny_ns_224.sw_in1k',image_height=224,image_width=480,out_indices=[0,2]):
@@ -59,25 +59,25 @@ class ResNet101_torchvision(nn.Module):
             out.append(x)
         return out
     
-class ResNet101_pretrained_cityscapes(nn.Module):
-    def __init__(self, image_height, image_width,out_indices=[2,4]):
-        super().__init__()
-        config_file = '/media/user/data/mmsegmentation/mask2former_r101_8xb2-90k_cityscapes-512x1024.py'
-        checkpoint_file = '/media/user/data/mmsegmentation/mask2former_r101_8xb2-90k_cityscapes-512x1024_20221130_031628-43e68666.pth'
-        model = init_model(config_file, checkpoint_file, device='cpu')
-        self.backbone = model.backbone
-        self.out_indices = out_indices
-        dummy = torch.rand(1, 3, image_height, image_width)#.to('cuda:0')
-        output_shapes = [x.shape for x in self.forward(dummy)]
-        self.output_shapes = output_shapes
-        self.backbone = self.backbone.to('cpu')
+# class ResNet101_pretrained_cityscapes(nn.Module):
+#     def __init__(self, image_height, image_width,out_indices=[2,4]):
+#         super().__init__()
+#         config_file = '/media/user/data/mmsegmentation/mask2former_r101_8xb2-90k_cityscapes-512x1024.py'
+#         checkpoint_file = '/media/user/data/mmsegmentation/mask2former_r101_8xb2-90k_cityscapes-512x1024_20221130_031628-43e68666.pth'
+#         model = init_model(config_file, checkpoint_file, device='cpu')
+#         self.backbone = model.backbone
+#         self.out_indices = out_indices
+#         dummy = torch.rand(1, 3, image_height, image_width)#.to('cuda:0')
+#         output_shapes = [x.shape for x in self.forward(dummy)]
+#         self.output_shapes = output_shapes
+#         self.backbone = self.backbone.to('cpu')
 
-    def forward(self,x):
-        out = []
-        x = self.backbone(x)
-        for i in self.out_indices:
-            out.append(x[i-1])
-        return out
+#     def forward(self,x):
+#         out = []
+#         x = self.backbone(x)
+#         for i in self.out_indices:
+#             out.append(x[i-1])
+#         return out
 
 if __name__ == '__main__':
     swinT = swinT_backbone(model_name='vit_small_patch16_384')
