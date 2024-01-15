@@ -133,6 +133,8 @@ class NuScenesDataset(torch.utils.data.Dataset):
         transform=None,
         cameras=[[0, 1, 2, 3, 4, 5]],
         bev={'h': 200, 'w': 200, 'h_meters': 100, 'w_meters': 100, 'offset': 0.0},
+        lidar=False,
+        radar=False,
     ):
         self.scene_name = scene_name
         self.transform = transform
@@ -144,6 +146,8 @@ class NuScenesDataset(torch.utils.data.Dataset):
         self.bev_shape = (bev['h'], bev['w'])
 
         self.samples = self.parse_scene(scene_record, cameras)
+        self.radar = radar
+        self.lidar = lidar
 
     def parse_scene(self, scene_record, camera_rigs):
         data = []
@@ -163,6 +167,13 @@ class NuScenesDataset(torch.utils.data.Dataset):
         return get_pose(record['rotation'], record['translation'], *args, **kwargs)
 
     def parse_sample_record(self, sample_record, camera_rig):
+        """
+            box: world coordinate
+            parse_pose: pose @ point , LiDAR -> world 
+                   inv: pose_inv @ point , LiDAR <- world
+            sensor, ego_sensor world 
+        """
+        
         lidar_record = self.nusc.get('sample_data', sample_record['data']['LIDAR_TOP'])
 
         # calibrated_lidar = self.nusc.get('calibrated_sensor', lidar_record['calibrated_sensor_token'])
@@ -190,7 +201,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
             cam_from_egocam = self.parse_pose(cam, inv=True)
             egocam_from_world = self.parse_pose(egocam, inv=True)
 
-            E = cam_from_egocam @ egocam_from_world @ world_from_egolidarflat# @ world_from_lidarflat
+            E = cam_from_egocam @ egocam_from_world @ world_from_egolidarflat # @ world_from_lidarflat
             I = cam['camera_intrinsic']
 
             full_path = Path(self.nusc.get_sample_data_path(cam_token))
@@ -290,6 +301,77 @@ class NuScenesDataset(torch.utils.data.Dataset):
             p = V @ S @ M_inv @ p                                                       # 3 7
 
             yield p                                                                     # 3 7
+
+    def convert_to_box_tri(self, sample, annotations,mode_in):
+        # Import here so we don't require nuscenes-devkit unless regenerating labels
+        from nuscenes.utils import data_classes
+
+        def get_view():
+            mode, h, w = mode_in
+            h_meters = 100 if h == 200 else 8
+            w_meters = 100 if w == 200 else 8
+            sh = h / h_meters
+            sw = w / w_meters
+            if mode == 0:
+                return np.float32([
+                [ 0., -sw,          w/2.],
+                [-sh,  0.,          h/2.],
+                [ 0.,  0.,            1.]
+            ])
+            elif mode == 1:
+                return np.float32([
+                [ sw,  0.,          w/2.],
+                [ 0., -sh,          h/2.],
+                [ 0.,  0.,            1.]
+            ])
+            else:
+                return np.float32([
+                [-sw,  0.,          w/2.],
+                [ 0., -sh,          h/2.],
+                [ 0.,  0.,            1.]
+            ])
+
+        M_inv = np.array(sample['pose_inverse'])
+        if mode_in[0] == 0:
+            S = np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 0, 1],
+            ])
+        elif mode_in[0] == 1:
+            S = np.array([
+                [1, 0, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ])
+        else:
+            S = np.array([
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ])
+        V = get_view()
+
+        if mode_in[0] == 0:
+            corners_index = [2, 3, 7, 6]
+        elif mode_in[0] == 1:
+            corners_index = [0, 4, 7, 3]
+        else:
+            corners_index = [2, 3, 0, 1]
+
+        for a in annotations:
+            box = data_classes.Box(a['translation'], a['size'], Quaternion(a['rotation']))
+
+            corners = box.corners()[:, corners_index]                                    # 3 4
+            center = corners.mean(-1)                                                   # 3
+            front = (corners[:, 0] + corners[:, 1]) / 2.0                               # 3
+            left = (corners[:, 0] + corners[:, 3]) / 2.0                                # 3
+
+            p = np.concatenate((corners, np.stack((center, front, left), -1)), -1)      # 3 7
+            p = np.pad(p, ((0, 1), (0, 0)), constant_values=1.0)                        # 4 7
+            p = V @ S @ M_inv @ p                                                       # 3 7
+
+            yield p
 
     def get_category_index(self, name, categories):
         """
@@ -426,6 +508,32 @@ class NuScenesDataset(torch.utils.data.Dataset):
 
         return 255 * np.stack(result, -1)
 
+    def get_dynamic_layers_triview(self, sample, anns_by_category):
+        # 0: bev, 1: side, 2: front
+        result = []
+        for i in range(3):
+            if i == 0:
+                h, w = 200, 200
+            elif i == 1:
+                h, w = 32, 200
+            else:
+                h, w = 32, 200
+
+            tmp_result = list()
+
+            for anns in anns_by_category:
+                render = np.zeros((h, w), dtype=np.uint8)
+
+                for p in self.convert_to_box_tri(sample, anns,[i,h,w]):
+                    p = p[:2, :4]
+
+                    cv2.fillPoly(render, [p.round().astype(np.int32).T], 1, INTERPOLATION)
+
+                tmp_result.append(render)
+
+            result.append(255 * np.stack(tmp_result, -1))
+        return result
+
     def get_radar(self,sample,use_radar_filters = False):
         from nuscenes.utils.data_classes import RadarPointCloud
         sample_rec = self.nusc.get('sample', sample['token'])
@@ -455,6 +563,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
             trans_matrix = reduce(np.dot, [sample['pose_inverse'],global_from_car, car_from_current]) 
             current_pc.transform(trans_matrix)
             out_l.append(current_pc.points)
+
         out_lidar = np.concatenate(out_l,1)
         V = self.view
         S = np.array([
@@ -469,6 +578,39 @@ class NuScenesDataset(torch.utils.data.Dataset):
         radar_map[(out_lidar[1,:].astype(int)),(out_lidar[0,:].astype(int))] = np.transpose(np.vstack((np.ones((1,out_lidar.shape[1]),dtype=float),out_lidar[3:,:])))
         return radar_map, out_lidar
     
+    def get_lidar(self, sample):
+        from nuscenes.utils.data_classes import LidarPointCloud
+        sample_rec = self.nusc.get('sample', sample['token'])
+        min_distance = 1.0
+
+        sample_data_token = sample_rec['data']['LIDAR_TOP']
+        current_sd_rec = self.nusc.get('sample_data', sample_data_token)
+        # Load up the pointcloud and remove points close to the sensor.
+        current_pc = LidarPointCloud.from_file(os.path.join(self.nusc.dataroot, current_sd_rec['filename']))
+        current_pc.remove_close(min_distance)
+
+        # Homogeneous transformation matrix from sensor coordinate frame to ego car frame.
+        current_cs_rec = self.nusc.get('calibrated_sensor', current_sd_rec['calibrated_sensor_token'])
+        car_from_current = self.parse_pose(current_cs_rec)
+
+        current_pc.transform(car_from_current)
+
+        out_lidar = current_pc.points
+        V = self.view
+        S = np.array([
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 0, 1],
+                ])
+        z = np.array(out_lidar[2,:])
+        out_lidar[:3] = V @ S @ np.vstack((out_lidar[:3],np.ones(out_lidar.shape[1])))
+        out_lidar[2,:] = z
+        mask = mask_out(out_lidar)
+        out_lidar = out_lidar[:,mask]
+        lidar_map = np.zeros((200,200,3),dtype=float)
+        lidar_map[(out_lidar[1,:].astype(int)),(out_lidar[0,:].astype(int))] = np.transpose(np.vstack((np.ones((1,out_lidar.shape[1]),dtype=float),out_lidar[2:,:])))
+        return lidar_map
+
     def __len__(self):
         return len(self.samples)
 
@@ -482,21 +624,25 @@ class NuScenesDataset(torch.utils.data.Dataset):
 
         static = self.get_static_layers(sample, STATIC)                             # 200 200 2
         dividers = self.get_line_layers(sample, DIVIDER)                            # 200 200 2
-        dynamic = self.get_dynamic_layers(sample, anns_dynamic)                     # 200 200 8
-
+        # dynamic = self.get_dynamic_layers(sample, anns_dynamic)                     # 200 200 8
+        dynamic = self.get_dynamic_layers_triview(sample, anns_dynamic) 
         if topology:
             static_v2 = self.get_static_layers(sample, STATIC2)                             # 200 200 2
             # dividers_v2 = self.get_line_layers(sample, DIVIDER_v2)     
 
-            bev = np.concatenate((static, dividers, dynamic,static_v2), -1)                     
+            bev = np.concatenate((static, dividers, dynamic[0],static_v2), -1)                     
         else:
-            bev = np.concatenate((static, dividers, dynamic), -1)                       # 200 200 12
+            bev = np.concatenate((static, dividers, dynamic[0]), -1)                       # 200 200 12
         assert bev.shape[2] == NUM_CLASSES
 
         # Additional labels for vehicles only.
         aux, visibility = self.get_dynamic_objects(sample, anns_vehicle)
         aux_ped, visibility_ped = self.get_dynamic_objects(sample, anns_ped)
-        radar, radar_points = self.get_radar(sample)
+        radar, lidar = None, None
+        if self.radar:
+            radar = self.get_radar(sample)
+        if self.lidar:
+            lidar = self.get_lidar(sample)
 
         # Package the data.
         data = Sample(
@@ -506,7 +652,10 @@ class NuScenesDataset(torch.utils.data.Dataset):
             aux_ped=aux_ped,
             visibility=visibility,
             visibility_ped=visibility_ped,
-            radar=[radar, radar_points],
+            radar=radar,
+            lidar=lidar,
+            side=dynamic[1],
+            front=dynamic[2],
             **sample
         )
 
