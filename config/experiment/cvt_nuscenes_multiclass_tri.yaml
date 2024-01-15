@@ -1,0 +1,49 @@
+# @package _global_
+defaults:
+  - override /model: cvt_res101_mask # cvt_res101_mask_multilayers
+  - override /data: nuscenes_vehicle
+
+  - override /loss: multiclass_loss # multiclass_loss vehicle_loss
+  - override /metrics: multiclass_metrics # multiclass_metrics vehicle_metrics
+
+model:
+  outputs:
+    bev: [0, 1]
+    ped: [1, 2]
+    STATIC: [2, 3]
+    DIVIDER: [3, 4]
+  
+  encoder:
+    tri_view: True
+
+    bev_embedding:
+      bev_z: 32
+      z_meters: 8
+
+visualization:
+  flip: False
+  key: ['STATIC','DIVIDER','bev','ped']
+  # key: ['bev']
+    
+data:
+  num_classes: 15
+  # lidar: True
+
+# loss:
+#   pedTri_weight: 5.0
+#   pedTri:
+#     _target_: cross_view_transformer.losses.TriLoss
+
+#     label_indices: [[5]]
+#     gamma: 2.0
+#     alpha: -1.0
+#     index: 0
+
+#   bevTri_weight: 1.0
+#   bevTri:
+#     _target_: cross_view_transformer.losses.TriLoss
+
+#     label_indices: [[0,1,2,3,4,6,7,8]]
+#     gamma: 2.0
+#     alpha: -1.0
+#     index: 1

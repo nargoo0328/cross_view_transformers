@@ -232,7 +232,8 @@ class BaseViz:
         assert c == len(self.SEMANTICS), c
 
         # Prioritize higher class labels
-
+        c = 12
+        bev = bev[...,:c]
         eps = (scalar * np.arange(c))[None, None]
         idx = (bev + eps).argmax(axis=-1)
         

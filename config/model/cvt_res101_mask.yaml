@@ -1,0 +1,58 @@
+_target_: cross_view_transformer.model.cvt.CrossViewTransformer
+
+dim_last: 64
+multi_head: True
+
+encoder:
+  _target_: cross_view_transformer.model.encoder.Encoder
+
+  dim: 256
+  scale: 1.0
+  # middle: [3, 3, 2, 2]
+  middle: [3, 3]
+  down_feature: True
+  # fpn: ${model.encoder.backbone.fpn}
+  reversed_feat: True
+  # lvl_embedding: True
+  backbone:
+
+    _target_: cross_view_transformer.model.backbones.timm_backbones.ResNet101
+    # out_indices: [1,2,3,4]
+    out_indices: [3,4]
+
+    image_height: ${data.image.h}
+    image_width: ${data.image.w}
+    # fpn: True
+
+  cross_view:
+    heads: 4 # 2 15744M
+    dim_head: 64 
+    qkv_bias: True
+    skip: True
+    no_image_features: False
+
+    image_height: ${data.image.h}
+    image_width: ${data.image.w}
+
+    mask: 0
+
+  bev_embedding:
+    sigma: 1.0
+
+    bev_height: ${data.bev.h}
+    bev_width: ${data.bev.w}
+    h_meters: ${data.bev.h_meters}
+    w_meters: ${data.bev.w_meters}
+    offset: ${data.bev.offset}
+
+    decoder_blocks: ${model.decoder.blocks}
+    pre_grid_view: ${model.encoder.cross_view.mask}
+  
+
+decoder:
+  _target_: cross_view_transformer.model.decoder.Decoder
+
+  dim: ${model.encoder.dim}
+  blocks: [256,128,64]
+  residual: True
+  factor: 2
