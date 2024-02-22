@@ -136,12 +136,11 @@ def resize(src, dst=None, shape=None, idx=0):
 class BaseViz:
     SEMANTICS = []
 
-    def __init__(self, label_indices=None, colormap='inferno',is_ce=False,key = ['STATIC','DIVIDER','bev','ped'],flip=False):
+    def __init__(self, label_indices=None, colormap='inferno',key = ['STATIC','DIVIDER','bev','ped'],flip=False):
         self.label_indices = label_indices
         self.colors = get_colors(self.SEMANTICS)
         self.colormap = colormap
         self.cmap = COLORS_2#MAP_PALETTE if 'DRIVABLE' in key else COLORS_2
-        self.is_ce = is_ce
         self.key = key
         self.flip = flip
 
@@ -267,15 +266,12 @@ class BaseViz:
     def visualize_custom(self, batch, pred, b, threshold):
         bev = batch['bev']
         # out = [self.visualize_pred(bev[b], pred[s][b].sigmoid()) for s in ['bev','ped']]
-        if self.is_ce:
-            pred = softmax(torch.cat((pred['NONE'],pred['ped'],pred['bev'],pred['DIVIDER'],pred['STATIC']),dim=1),dim=1).argmax(dim=1)  
-            right = decode_segmap(pred[b].cpu().numpy())
-        else:
-            tmp = list()
-            for k in self.key:
-                tmp.append(pred[k].sigmoid())
-            pred = torch.cat(tmp,dim=1)
-            right = self.visuaulize_pred_v2(pred[b],batch['view'][0].cpu().numpy(),threshold)
+
+        tmp = list()
+        for k in self.key:
+            tmp.append(pred[k].sigmoid())
+        pred = torch.cat(tmp,dim=1)
+        right = self.visuaulize_pred_v2(pred[b],batch['view'][0].cpu().numpy(),threshold)
 
         # out = [self.visualize_bev(pred[b],c) for c in np.linspace(0.1,0.5,9)]
         return [right] #out+[right]
