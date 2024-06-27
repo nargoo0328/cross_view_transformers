@@ -1,0 +1,87 @@
+_target_: cross_view_transformer.model.sparsebev.BEVSD
+
+backbone:
+  _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
+
+  model_name: efficientnet_b4
+  out_indices: [1,2,3,4]
+  fpn: True
+
+  # freeze_layers: [layer1]
+  embed_dims: ${model.encoder.embed_dims}
+
+  image_height: ${data.image.h}
+  image_width: ${data.image.w}
+
+# neck:
+#   _target_: cross_view_transformer.model.backbones.agp.AGPNeck
+
+#   align_res_layer:
+#     _target_: cross_view_transformer.model.backbones.agp.AlignRes
+#     mode: "upsample"
+#     scale_factors: [1, 2]
+
+#   prepare_c_layer:
+#     _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
+
+#     in_channels: [56, 160]
+#     mode: "doubleconv"
+#     tail_mode: "conv2d"
+  
+#   list_output: True
+
+encoder:
+  # _target_: cross_view_transformer.model.sparsebev.SparseHead
+
+  # embed_dims: 128
+  # query_type: box
+
+  # # box
+  # pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+  # num_classes: 8
+  # num_query: 400
+  # num_reg_fcs: 2
+  # num_points_in_pillar: 1
+
+  # transformer:
+  #   _target_: cross_view_transformer.model.sparsebev.SparseBEVTransformerDecoder
+    
+  #   n_layer: 6
+
+  #   num_points_in_pillar: ${model.encoder.num_points_in_pillar}
+  #   embed_dims: ${model.encoder.embed_dims}
+  #   pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+  #   num_levels: 1
+  #   h: ${data.image.h}
+  #   w: ${data.image.w}
+  #   num_points: 4
+  #   checkpointing: True
+  #   query_type: box
+  #   num_groups: 1
+
+  _target_: cross_view_transformer.model.sparsebev.SparseHead
+
+  embed_dims: 128
+  query_type: bev
+
+  # box
+  H: 50
+  W: 50
+  Z: 8
+  num_points_in_pillar: 8
+
+  transformer:
+    _target_: cross_view_transformer.model.sparsebev.SparseBEVTransformerDecoder
+    
+    n_layer: 6
+
+    num_points_in_pillar: ${model.encoder.num_points_in_pillar}
+    embed_dims: ${model.encoder.embed_dims}
+    pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+    num_levels: 4
+    h: ${data.image.h}
+    w: ${data.image.w}
+    num_points: 16
+    checkpointing: True
+    query_type: bev
+    num_groups: 1

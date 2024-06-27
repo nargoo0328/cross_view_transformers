@@ -1,0 +1,78 @@
+_target_: cross_view_transformer.model.sparsebev_seg.SparseBEVSeg
+
+backbone:
+  _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
+  # _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
+
+  # model_name: efficientnet_b4
+  # out_indices: [1,2,3,4]
+  # fpn: True
+
+  # # freeze_layers: [layer1]
+  # embed_dims: ${model.encoder.embed_dims}
+
+  image_height: ${data.image.h}
+  image_width: ${data.image.w}
+
+neck:
+  _target_: cross_view_transformer.model.backbones.agp.AGPNeck
+
+  align_res_layer:
+    _target_: cross_view_transformer.model.backbones.agp.AlignRes
+    mode: "upsample"
+    scale_factors: [1, 2]
+
+  prepare_c_layer:
+    _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
+
+    in_channels: [56, 160]
+    mode: "doubleconv"
+    tail_mode: "conv2d"
+  
+  list_output: True
+
+encoder:
+  _target_: cross_view_transformer.model.sparsebev_seg.SparseHead
+
+  embed_dims: 128
+
+  # bev
+  num_points_in_pillar: 8
+  H: 200
+  W: 200
+  Z: 8
+
+  transformer:
+    _target_: cross_view_transformer.model.sparsebev_seg.SparseBEVTransformerDecoder
+    
+    n_layer: 1
+
+    num_points_in_pillar: ${model.encoder.num_points_in_pillar}
+    embed_dims: ${model.encoder.embed_dims}
+    pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+    num_levels: 4
+    h: ${data.image.h}
+    w: ${data.image.w}
+    num_points: 8
+    checkpointing: False
+    num_groups: 1
+    scale: 1.0
+
+head:
+  _target_: cross_view_transformer.model.decoder.SegHead
+
+  dim_last: 128
+  multi_head: True
+  decoder:
+    # _target_: cross_view_transformer.model.decoder.BEVDecoder
+    
+    # dim: ${model.encoder.embed_dims}
+    # blocks: [128, 128]
+    # residual: True
+    # factor: 2
+    _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+    in_channels: 128
+
+  outputs:
+    bev: [0, 1]
+    ped: [1, 2]

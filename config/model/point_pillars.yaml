@@ -1,0 +1,12 @@
+_target_: cross_view_transformer.model.point_backbones.point_pillars.PointPillars
+
+dim_last: 64
+
+decoder:
+  _target_: cross_view_transformer.model.decoder.Decoder
+
+  dim: 256
+  blocks: [256,128,64]
+  residual: True
+  factor: 2
+  

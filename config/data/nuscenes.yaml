@@ -24,8 +24,20 @@ bev:
   offset: 0.0
 
 # input parameters (not used in label generation)
-augment: 'none'
 image:
-  h: 448 #224
-  w: 800 #480
+  h: 224 #224
+  w: 480 #480
   top_crop: 46
+
+augment: False
+
+ida_aug_conf:
+  resize_lim: [0.38,0.55] # [0.495,0.505]
+  final_dim: [224, 480]
+  crop_offset: 40
+  rot_lim: [-2.5, 2.5]
+  H: 900
+  W: 1600
+  rand_flip: False
+
+bev_aug_conf: [30.,20.,0.,20.,0.,0.]

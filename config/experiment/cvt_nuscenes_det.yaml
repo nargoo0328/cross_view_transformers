@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - override /model: cvt_det
+  - override /data: nuscenes_vehicle
+
+  - override /loss: det_loss
+  - override /metrics: det_metrics
+
+model:
+  outputs:
+    bev: [0, 1]
+    ped: [1, 2]
+
+visualization:
+  flip: False
+  key: ['bev','ped']
+  box: True
+    
+data:
+  num_classes: 15
+  box: pseudo

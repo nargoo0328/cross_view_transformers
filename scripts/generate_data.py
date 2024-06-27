@@ -26,7 +26,7 @@ def setup(cfg):
     # cfg.loader.persistent_workers = False
 
 
-@hydra.main(config_path=Path.cwd() / 'config', config_name='config.yaml')
+@hydra.main(config_path=str(Path.cwd() / 'config'), config_name='config.yaml')
 def main(cfg):
     """
     Creates the following dataset structure

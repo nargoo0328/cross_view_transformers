@@ -1,4 +1,6 @@
 import timm
+from timm.utils.model import freeze
+
 import torch
 import torch.nn as nn
 import torchvision
@@ -17,18 +19,27 @@ class swinT_backbone(nn.Module):
         x = self.model(x)
         return x
     
-class ResNet101(nn.Module):
-    def __init__(self, image_height, image_width,out_indices=[2,4], fpn=False):
+class ResNet50(nn.Module):
+    def __init__(self, image_height, image_width, out_indices=[2,4], fpn=False, checkpointing=False, freeze_layers=[], embed_dims=256):
         super().__init__()
-        self.model = timm.create_model('resnet101', features_only=True, pretrained=True,out_indices=out_indices)
-        dummy = torch.rand(1, 3, image_height, image_width)
-        output_shapes = [x.shape for x in self.model(dummy)]
-        self.output_shapes = output_shapes
+        self.model = timm.create_model('resnet50', features_only=True, pretrained=True, out_indices=out_indices)
+
+        if len(freeze_layers) !=0:
+            freeze(self.model, freeze_layers)
+
         self.fpn = None
         if fpn:
-            in_channels = [i[1] for i in output_shapes]
-            self.fpn = torchvision.ops.FeaturePyramidNetwork(in_channels, 256)
+            channels = [256, 512, 1024, 2048]
+            in_channels = [channels[i-1] for i in out_indices]
+            self.fpn = torchvision.ops.FeaturePyramidNetwork(in_channels, embed_dims)
 
+        dummy = torch.rand(1, 3, image_height, image_width)
+        output_shapes = [x.shape for x in self(dummy)]
+        self.output_shapes = output_shapes
+        
+        if checkpointing:
+            self.model.set_grad_checkpointing()
+    
     def forward(self,x):
         x = self.model(x)
         if self.fpn is not None:
@@ -39,25 +50,43 @@ class ResNet101(nn.Module):
             x = [v for _, v in x.items()]
         return x
     
-class ResNet101_torchvision(nn.Module):
-    def __init__(self, image_height, image_width):
+class TimmBackbone(nn.Module):
+    def __init__(self, model_name, image_height, image_width, out_indices=[2,4], fpn=False, checkpointing=False, freeze_layers=[], embed_dims=256):
+        """
+        model_name: resnet50, resnet101, efficientnet_b4, ...
+        """
         super().__init__()
-        resnet = torchvision.models.resnet101(pretrained=True)
-        layer1 = nn.Sequential(*list(resnet.children())[:-5])
-        layer2 = resnet.layer2
-        layer3 = resnet.layer3
-        layer4 = resnet.layer4
-        self.backbone = nn.ModuleList([layer1,layer2,layer3,layer4])
+        self.model = timm.create_model(model_name, features_only=True, pretrained=True, out_indices=out_indices)
+        
         dummy = torch.rand(1, 3, image_height, image_width)
-        output_shapes = [x.shape for x in self.forward(dummy)]
-        self.output_shapes = output_shapes
+        output_shapes = [x.shape for x in self.model(dummy)]
 
+        self.fpn = None
+        if fpn:
+            channels = [shape[1] for shape in output_shapes]
+            in_channels = [channels[i-1] for i in out_indices]
+            self.fpn = torchvision.ops.FeaturePyramidNetwork(in_channels, embed_dims)
+            output_shapes = [x.shape for x in self(dummy)]
+            
+        self.output_shapes = output_shapes
+        
+        if checkpointing:
+            self.model.set_grad_checkpointing()
+
+        if len(freeze_layers) !=0:
+            freeze(self.model, freeze_layers)
+    
     def forward(self,x):
-        out = []
-        for l in self.backbone:
-            x = l(x)
-            out.append(x)
-        return out
+        x = self.model(x)
+
+        if self.fpn is not None:
+            _in = OrderedDict()
+            for i,tmp_x in enumerate(x):
+                _in[i] = tmp_x
+            x = self.fpn(_in)
+            x = [v for _, v in x.items()]
+
+        return x
     
 # class ResNet101_pretrained_cityscapes(nn.Module):
 #     def __init__(self, image_height, image_width,out_indices=[2,4]):

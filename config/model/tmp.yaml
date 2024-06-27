@@ -1,0 +1,90 @@
+_target_: cross_view_transformer.model.PointBEV.PointBEVDET
+
+outputs:
+  bev: [0, 1]
+  ped: [1, 2]
+
+dim_last: 128
+sparse: True
+num_groups: 1
+
+backbone:
+
+  _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
+
+  # model_name: efficientnet-b4
+  # layer_names: ['reduction_3', 'reduction_4']
+
+  # # _target_: cross_view_transformer.model.backbones.timm_backbones.ResNet50
+  # # out_indices: [3,4]
+  # # fpn: False
+  # # freeze_layers: [layer1, layer2]
+  # # embed_dims: ${model.dim_last}
+
+  image_height: ${data.image.h}
+  image_width: ${data.image.w}
+
+  # _target_: cross_view_transformer.model.backbones.efficientnet.Encoder_eff
+
+  # model_name: efficientnet-b4
+  # layer_names: ['reduction_3', 'reduction_4']
+
+neck:
+  _target_: cross_view_transformer.model.backbones.agp.AGPNeck
+
+  align_res_layer:
+    _target_: cross_view_transformer.model.backbones.agp.AlignRes
+    mode: "upsample"
+    scale_factors: [1, 2]
+
+  prepare_c_layer:
+    _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
+
+    in_channels: [56, 160]
+    mode: "doubleconv"
+    tail_mode: "conv2d"
+
+box_encoder:
+  _target_: cross_view_transformer.model.sparsebev.SparseHead
+
+  embed_dims: 128
+  query_type: box
+
+  # box
+  pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+  num_classes: 8
+  num_query: 400
+  num_reg_fcs: 2
+  num_points_in_pillar: 1
+
+  transformer:
+    _target_: cross_view_transformer.model.sparsebev.SparseBEVTransformerDecoder
+    
+    n_layer: 4
+    num_groups: ${model.num_groups}
+
+    num_points_in_pillar: ${model.box_encoder.num_points_in_pillar}
+    embed_dims: ${model.box_encoder.embed_dims}
+    pc_range: ${model.box_encoder.pc_range}
+    num_levels: 4
+    h: ${data.image.h}
+    w: ${data.image.w}
+    num_points: 8
+    checkpointing: True
+    query_type: box
+
+bev_encoder:
+  _target_: cross_view_transformer.model.PointBEV.PointBEV_Encoder
+
+  mode: box
+
+unet:
+  _target_: cross_view_transformer.model.sparse_resnet.SparseUNet
+
+  in_c: ${model.dim_last}
+  out_c: ${model.dim_last}
+
+  # _target_: cross_view_transformer.model.decoder.BEVUNet
+
+  # dim: 128
+  # num_blocks: 3

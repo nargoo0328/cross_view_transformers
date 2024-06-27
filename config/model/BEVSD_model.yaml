@@ -1,0 +1,48 @@
+_target_: cross_view_transformer.model.encoder.BEVSD
+
+backbone:
+  _target_: cross_view_transformer.model.backbones.timm_backbones.ResNet101
+  out_indices: [3,4]
+  fpn: True
+
+  image_height: ${data.image.h}
+  image_width: ${data.image.w}
+
+head:
+  _target_: cross_view_transformer.model.encoder.BEVSDHead
+
+  embed_dims: 128
+  pc_range: [-50.0, -50.0, -5.0, 50.0, 50.0, 3.0]
+  num_points_in_pillar: 4
+  H: 50
+  W: 50
+  Z: 8
+  num_levels: 2
+  transformer:
+    _target_: cross_view_transformer.model.encoder.BEVSDTransformerDecoder
+    
+    n_layer: 4
+    d_model: ${model.head.embed_dims}
+    nhead: 4
+    dim_feedforward: 512
+    pc_range: [-50.0, -50.0, -5.0, 50.0, 50.0, 3.0]
+    num_levels: ${model.head.num_levels}
+    h: ${data.image.h}
+    w: ${data.image.w}
+    num_points_in_pillar: ${model.head.num_points_in_pillar}
+    num_points: 2
+    num_heads: 4
+
+  decoder:
+    _target_: cross_view_transformer.model.decoder.BEVDecoder
+    
+    dim: ${model.head.embed_dims}
+    blocks: [128,64]
+    residual: True
+    factor: 2
+  
+  outputs:
+    bev: [0, 1]
+    ped: [1, 2]
+
+  dim_last: 64

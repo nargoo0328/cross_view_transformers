@@ -1,0 +1,71 @@
+_target_: cross_view_transformer.model.sparsebev.BEVSD
+
+outputs:
+  bev: [0, 1]
+  ped: [1, 2]
+
+dim_last: 128
+
+backbone:
+  _target_: cross_view_transformer.model.backbones.timm_backbones.ResNet50
+  out_indices: [1,2,3,4]
+  fpn: True
+
+  image_height: ${data.image.h}
+  image_width: ${data.image.w}
+
+  freeze_layers: [layer1]
+  embed_dims: ${model.encoder.embed_dims}
+
+encoder:
+  _target_: cross_view_transformer.model.sparsebev.SparseHead
+
+  embed_dims: 128
+  query_type: box
+
+  
+  # bev
+  # num_points_in_pillar: 4
+  # H: 50
+  # W: 50
+  # Z: 8
+
+  # box
+  pc_range: [-50.0, -50.0, 0.0, 50.0, 50.0, 4.0]
+  num_classes: 8
+  num_query: 900
+  num_reg_fcs: 2
+  num_points_in_pillar: 1
+
+  transformer:
+    _target_: cross_view_transformer.model.sparsebev.SparseBEVTransformerDecoder
+    
+    n_layer: 6
+
+    num_points_in_pillar: ${model.encoder.num_points_in_pillar}
+    embed_dims: ${model.encoder.embed_dims}
+    pc_range: [-50.0, -50.0, 0.0, 50.0, 50.0, 4.0]
+    num_levels: 4
+    h: ${data.image.h}
+    w: ${data.image.w}
+    num_points: 8
+    checkpointing: True
+    query_type: ${model.encoder.query_type}
+
+# decoder:
+#   _target_: cross_view_transformer.model.decoder.BEVDecoder
+  
+#   dim: ${model.encoder.embed_dims}
+#   blocks: [128,64]
+#   residual: True
+#   factor: 2
+
+decoder:
+  _target_: cross_view_transformer.model.sparse_resnet.SparseUNet
+  
+  in_c: ${model.encoder.embed_dims}
+
+  # out_c: ${model.dim_last}
+  # with_tail_conv: True
+
+sparse: True

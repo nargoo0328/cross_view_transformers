@@ -1,4 +1,4 @@
-ped_weight: 20.0
+ped_weight: 10.0
 ped:
   _target_: cross_view_transformer.losses.BinarySegmentationLoss
 

@@ -1,0 +1,66 @@
+_target_: cross_view_transformer.model.cvt.CrossViewTransformer
+
+dim_last: 64
+multi_head: True
+
+encoder:
+  _target_: cross_view_transformer.model.encoder.Encoder
+
+  dim: 128
+  scale: 1.0
+  middle: [2, 2]
+  backbone:
+    # _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNetExtractor
+
+    # model_name: efficientnet-b4
+    # layer_names: ['reduction_3', 'reduction_4']
+
+    _target_: cross_view_transformer.model.backbones.timm_backbones.ResNet101
+    out_indices: [3,4]
+    fpn: True
+
+    image_height: ${data.image.h}
+    image_width: ${data.image.w}
+
+  cross_view:
+    heads: 4 # 2 15744M
+    dim_head: 32 
+    qkv_bias: True
+    skip: True
+    no_image_features: False
+
+    image_height: ${data.image.h}
+    image_width: ${data.image.w}
+
+  bev_embedding:
+    sigma: 1.0
+
+    bev_height: ${data.bev.h}
+    bev_width: ${data.bev.w}
+    h_meters: ${data.bev.h_meters}
+    w_meters: ${data.bev.w_meters}
+    offset: ${data.bev.offset}
+    decoder_blocks: ${model.decoder.blocks}
+  
+decoder:
+  _target_: cross_view_transformer.model.decoder.Decoder
+
+  dim: ${model.encoder.dim}
+  blocks: [128,128,64]
+  residual: True
+  factor: 2
+  # return_inter: 0
+
+transformer: 
+  _target_: cross_view_transformer.model.detr.transformer.Transformer
+  d_model: 128
+  nhead: 4
+  num_encoder_layers: 2
+  num_decoder_layers: 2
+  dim_feedforward: 512
+  pos_embed: sine
+  height: 25
+  width: 25
+
+num_classes: 2
+num_queries: 80

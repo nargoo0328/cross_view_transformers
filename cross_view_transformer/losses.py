@@ -1,5 +1,5 @@
 import torch
-from torch.nn import CrossEntropyLoss
+import torch.nn as nn
 import torch.nn.functional as F
 import logging
 import numpy as np
@@ -9,11 +9,12 @@ from fvcore.nn import sigmoid_focal_loss
 logger = logging.getLogger(__name__)
 
 class SpatialRegressionLoss(torch.nn.Module):
-    def __init__(self, norm, min_visibility=2):
+    def __init__(self, norm, min_visibility=2, ignore_index=None):
         super(SpatialRegressionLoss, self).__init__()
         # center:2, offset: 1
         self.norm = norm
         self.min_visibility = min_visibility
+        self.ignore_index = ignore_index
 
         if norm == 1:
             self.loss_fn = F.l1_loss
@@ -22,11 +23,13 @@ class SpatialRegressionLoss(torch.nn.Module):
         else:
             raise ValueError(f'Expected norm 1 or 2, but got norm={norm}')
 
-    def forward(self, prediction, batch):
+    def forward(self, prediction, batch, eps=1e-6):
+
+        pred_mask = prediction['mask'] if 'mask' in prediction else None
+
         if self.norm == 2:
             prediction = prediction['center']
             target = batch['center']
-            prediction = prediction
         else:
             prediction = prediction['offset']
             target = batch['offset']
@@ -35,12 +38,29 @@ class SpatialRegressionLoss(torch.nn.Module):
         # ignore_index is the same across all channels
 
         loss = self.loss_fn(prediction, target, reduction='none')
-        if self.norm == 1:
-            loss = loss.sum(dim=1)[:,None]
-        # Sum channel dimension
-        mask = batch['visibility'] >= self.min_visibility
-        loss = loss[mask[:, None]]
-        return loss.mean()
+
+        # if self.norm == 1:
+        #     loss = loss.sum(dim=1)[:,None]
+
+        # # Sum channel dimension
+        # mask = batch['visibility'] >= self.min_visibility
+        
+        # loss = loss[mask[:, None]]
+        # return loss.mean()
+    
+        if self.min_visibility is not None:
+            mask = batch['visibility'] >= self.min_visibility
+            mask = mask[:, None]
+        else:
+            mask = torch.ones_like(loss, dtype=torch.bool)
+
+        if pred_mask is not None:
+            mask = mask & pred_mask[:, None]
+
+        if self.ignore_index is not None:
+            mask = mask * target != self.ignore_index
+            
+        return (loss * mask).sum() / (mask.sum() + eps)
 
 class SigmoidFocalLoss(torch.nn.Module):
     def __init__(
@@ -57,7 +77,21 @@ class SigmoidFocalLoss(torch.nn.Module):
 
     def forward(self, pred, label):
         return sigmoid_focal_loss(pred, label, self.alpha, self.gamma, self.reduction)
+    
+class Features_Loss(torch.nn.Module):
+    def __init__(
+        self,
+        loss,
+    ):
+        super().__init__()
+        if loss == 'L1':
+            self.loss = nn.L1Loss()
+        elif loss == 'L2':
+            self.loss = nn.MSELoss()
 
+    def forward(self, pred, label):
+        # label not used
+        return self.loss(pred['pred_features'], pred['features'])
 
 class diceLoss(torch.nn.Module):
     def __init__(
@@ -102,17 +136,23 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
         min_visibility=None,
         alpha=-1.0,
         gamma=2.0,
-        key='bev'
+        key='bev',
+        sparse=False,
     ):
         super().__init__(alpha=alpha, gamma=gamma, reduction='none')
         
         self.label_indices = label_indices
         self.min_visibility = min_visibility
         self.key = key
+        self.sparse = sparse
 
     def forward(self, pred, batch):
         if isinstance(pred, dict):
+            pred_mask = pred['mask'][:, None] if 'mask' in pred else None
             pred = pred[self.key]
+        
+        if self.sparse:
+            pred_mask = pred == 0
 
         label = batch['bev']
 
@@ -127,7 +167,13 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
                 mask = batch['visibility_ped'] >= self.min_visibility
             else:
                 mask = batch['visibility'] >= self.min_visibility
-            loss = loss[mask[:, None]]
+
+            mask = mask[:, None]
+            if pred_mask is not None:
+                mask = mask & pred_mask
+            if self.sparse:
+                mask = mask & pred_mask
+            loss = loss[mask]
 
         return loss.mean()
     
@@ -153,7 +199,6 @@ class CenterLoss(SigmoidFocalLoss):
 
         return loss.mean()
 
-
 class MultipleLoss(torch.nn.ModuleDict):
     """
     losses = MultipleLoss({'bce': torch.nn.BCEWithLogitsLoss(), 'bce_weight': 1.0})
@@ -162,28 +207,53 @@ class MultipleLoss(torch.nn.ModuleDict):
     def __init__(self, modules_or_weights):
         modules = dict()
         weights = dict()
+        learnable_weights = dict()
 
         # Parse only the weights
         for key, v in modules_or_weights.items():
             if isinstance(v, float):
-                weights[key.replace('_weight', '')] = v
+                k = key.replace('_weight', '')
+                if v == -1:
+                    weights[k] =  0.001 if k not in ['visible', 'ped'] else 10.0 # 0.5 if k not in ['visible', 'ped'] else 10.0 0.5 if k not in ['loss_bbox'] else 1.0
+                    learnable_weights[k] = nn.Parameter(torch.tensor(0.0), requires_grad=True)
+                else:
+                    weights[k] = v
 
         # Parse the loss functions
         for key, v in modules_or_weights.items():
             if not isinstance(v, float):
                 modules[key] = v
 
-                # Assign weight to 1.0 if not explicitly set.
-                if key not in weights:
-                    logger.warn(f'Weight for {key} was not specified.')
-                    weights[key] = 1.0
-        assert modules.keys() == weights.keys()
-
         super().__init__(modules)
 
         self._weights = weights
+        self.learnable_weights = torch.nn.ParameterDict(learnable_weights)
 
     def forward(self, pred, batch):
-        outputs = {k: v(pred, batch) for k, v in self.items()}
-        total = sum(self._weights[k] * o for k, o in outputs.items())
-        return total, outputs
+        outputs = dict()
+        weights = dict()
+
+        for k, v in self.items():
+
+            if k =='learnable_weights':
+                continue
+            elif k != 'Set':
+                outputs[k] = v(pred, batch)
+            else:
+                if 'pred_logits' not in pred:
+                    continue
+                out = v(pred, batch)
+                for k2, v2 in out.items():
+                    outputs[k2] = v2
+        # outputs = {k: v(pred, batch) for k, v in self.items()}
+        loss = []
+        for k, o in outputs.items():
+            loss_weight = self._weights[k]
+            if k in self.learnable_weights:
+                loss_weight = (1 / torch.exp(self.learnable_weights[k])) * loss_weight
+                weights[k] = loss_weight
+
+            single_loss = loss_weight * o
+            loss.append(single_loss)
+
+        return sum(loss), outputs, weights

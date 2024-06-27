@@ -33,11 +33,22 @@ def setup_network(cfg: DictConfig):
 def setup_model_module(cfg: DictConfig) -> ModelModule:
     backbone = setup_network(cfg)
     loss_func = MultipleLoss(instantiate(cfg.loss))
-    metrics = MetricCollection({k: v for k, v in instantiate(cfg.metrics).items()})
+    # metrics = MetricCollection({k: v for k, v in instantiate(cfg.metrics).items()})
+    try:
+        metrics = MetricCollection({k: v for k, v in instantiate(cfg.metrics).items()}, compute_groups=False)
+    except:
+        metrics = None
+
+    try:
+        nusc_metric = instantiate(cfg.nusc_metric)
+    except:
+        nusc_metric = None
 
     model_module = ModelModule(backbone, loss_func, metrics,
                                cfg.optimizer, cfg.scheduler,
-                               cfg=cfg)
+                               cfg=cfg,
+                               nusc_metric=nusc_metric,
+                               val_only=cfg.val_only)
 
     return model_module
 
@@ -58,22 +69,23 @@ def setup_experiment(cfg: DictConfig) -> Tuple[ModelModule, DataModule, Callable
     return model_module, data_module, viz_fn
 
 
-def load_backbone(checkpoint_path: str, prefix: str = 'backbone',device=torch.device('cpu')):
+def load_backbone(checkpoint_path: str, prefix: str = 'backbone', device=torch.device('cpu'), backbone=None):
     checkpoint = torch.load(checkpoint_path, map_location=device)
-
-    cfg = DictConfig(checkpoint['hyper_parameters'])
-
-    cfg = OmegaConf.to_object(checkpoint['hyper_parameters'])
-    # cfg['model']['encoder']['backbone']['image_height'] = cfg['model']['encoder']['backbone'].pop('input_height')
-    # cfg['model']['encoder']['backbone']['image_width'] = cfg['model']['encoder']['backbone'].pop('input_width')
-    # cfg['model']['encoder']['cross_view'].pop('spherical')
-    # cfg['model']['encoder']['bev_embedding']['sigma'] = 1.0
-    # cfg['model']['encoder']['bev_embedding']['offset'] = 0.0
-    cfg = DictConfig(cfg)
-
     state_dict = remove_prefix(checkpoint['state_dict'], prefix)
 
-    backbone = setup_network(cfg)
+    if backbone is None:
+        cfg = DictConfig(checkpoint['hyper_parameters'])
+        cfg = OmegaConf.to_object(checkpoint['hyper_parameters'])
+        cfg = DictConfig(cfg)
+        backbone = setup_network(cfg)
+
+    del_key = []
+    for k in state_dict:
+        if 'loss_func' in k and 'weight' in k:
+            del_key.append(k)
+    for k in del_key:
+        del state_dict[k]
+        
     backbone.load_state_dict(state_dict)
 
     return backbone

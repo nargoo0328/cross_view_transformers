@@ -5,8 +5,10 @@ import torch.utils.data
 from typing import Any, Optional
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 from pytorch_lightning.loggers.wandb import WandbLogger
-from pytorch_lightning.utilities import rank_zero_only
-from pytorch_lightning.utilities.warnings import rank_zero_warn
+# from pytorch_lightning.utilities import rank_zero_only
+from pytorch_lightning.utilities.rank_zero import rank_zero_only 
+
+# from pytorch_lightning.utilities.warnings import rank_zero_warn
 
 
 class VisualizationCallback(pl.Callback):
@@ -48,9 +50,9 @@ class VisualizationCallback(pl.Callback):
             self._log_image(viz(**outputs), f'{prefix}/{key}', trainer.logger)
 
     def _log_image(self, image_batch, tag, logger):
-        if isinstance(logger, torch.utils.tensorboard.writer.SummaryWriter):
-            logger.add_images(tag=tag, img_tensor=torch.from_numpy(image_batch), dataformats='NHWC')
-        elif isinstance(logger, WandbLogger):
+        # if isinstance(logger, torch.utils.tensorboard.writer.SummaryWriter):
+        #     logger.add_images(tag=tag, img_tensor=torch.from_numpy(image_batch), dataformats='NHWC')
+        if isinstance(logger, WandbLogger):
             logger.log_image(tag, image_batch)
-        else:
-            rank_zero_warn(f'Invalid logger {logger}')
+        # else:
+        #     rank_zero_warn(f'Invalid logger {logger}')

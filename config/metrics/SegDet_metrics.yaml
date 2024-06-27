@@ -1,0 +1,21 @@
+iou_vehicle:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: ${data.label_indices}
+
+iou_ped:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[9]]
+  key: ped
+
+box_map:
+  _target_: cross_view_transformer.metrics.BoxMAPMetric
+  output_format: ['map', 'map_50', 'map_75']
+  metrics_setting:
+    box_format: xyxy
+
+# nusc_metric:
+#   _target_: cross_view_transformer.metrics.CustomNuscMetric
+
+#   version: ${data.version}
+#   nusc_path: ${data.dataset_dir}
+#   pc_range: ${model.head.pc_range}

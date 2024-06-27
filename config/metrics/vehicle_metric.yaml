@@ -1,0 +1,4 @@
+iou_vehicle:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: ${data.label_indices}
+  min_visibility: 2

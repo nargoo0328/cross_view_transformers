@@ -1,0 +1,5 @@
+box_map:
+  _target_: cross_view_transformer.metrics.BoxMAPMetric
+  output_format: ['map', 'map_50', 'map_75']
+  metrics_setting:
+    box_format: xyxy

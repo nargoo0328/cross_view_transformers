@@ -4,6 +4,8 @@ import cv2
 from pathlib import Path
 from pyquaternion import Quaternion
 
+from sklearn.cluster import DBSCAN
+from random import randrange
 
 INTERPOLATION = cv2.LINE_8
 
@@ -84,6 +86,30 @@ def decode(img, n):
 
     return x
 
+def apply_dbscan(data, eps, min_samples):
+    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(data)
+    labels = clustering.labels_
+    return labels
+
+def map2points(data):
+    ys, xs = np.where(data == 1)
+    return np.array((xs, ys)).transpose()
+
+def generate_colors(number):
+    return [(randrange(255), randrange(255), randrange(255)) for _ in range(number)]
+
+def get_min_max(pts_list, h=200, w=200):
+    min_x, max_x, min_y, max_y = h, -1, w, -1
+    for (x,y) in pts_list:
+        if x < min_x:
+            min_x = x
+        if y < min_y:
+            min_y = y
+        if x > max_x:
+            max_x = x
+        if y > max_y:
+            max_y = y
+    return (min_x, min_y), (max_x, max_y)
 
 if __name__ == '__main__':
     from PIL import Image

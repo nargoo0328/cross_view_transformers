@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - override /model: SparseBEV # BEVSD_model
+  - override /data: nuscenes_vehicle
+
+  - override /loss: objects_loss # detection_loss
+  - override /metrics: objects_metrics # detection_metrics
+  - override /visualization: nuscenes_objects
+
+# visualization:
+  # box: True
+  # bev: False
+    
+data:
+  num_classes: 15
+#   box: pseudo
+
+# model:
+#   box_only: True
+
+val_only: False

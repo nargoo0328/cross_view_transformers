@@ -1,0 +1,18 @@
+# @package _global_
+defaults:
+  - override /model: detr3d
+  - override /data: nuscenes_vehicle
+
+  - override /loss: detr3d_loss
+  - override /metrics: detr3d_metrics
+
+visualization:
+  flip: False
+  box: ${data.box}
+  bev: False
+  orientation: ${data.orientation}
+    
+data:
+  num_classes: 15
+  box: gt
+  orientation: True

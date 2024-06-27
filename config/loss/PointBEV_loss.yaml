@@ -1,0 +1,23 @@
+visible_weight: -1.0
+visible:
+  _target_: cross_view_transformer.PointBEV_loss.BCELoss
+
+  label_indices: ${data.label_indices}
+  pos_weight: 2.13
+  min_visibility: 2
+
+center_weight: -1.0
+center:
+  _target_: cross_view_transformer.losses.SpatialRegressionLoss
+
+  norm: 2
+  min_visibility: 2
+
+
+offset_weight: -1.0
+offset:
+  _target_: cross_view_transformer.losses.SpatialRegressionLoss
+
+  norm: 1
+  min_visibility: 2
+  ignore_index: 0.0

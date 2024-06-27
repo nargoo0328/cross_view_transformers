@@ -1,7 +1,0 @@
-# @package _global_
-defaults:
-  - override /model: fusion_VP
-  - override /data: VP
-  - override /visualization: VP_viz
-  - override /metrics: VP_metrics
-  - override /loss: divider_loss

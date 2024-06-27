@@ -1,0 +1,43 @@
+_target_: cross_view_transformer.model.encoder.Detr3D
+
+backbone:
+  _target_: cross_view_transformer.model.backbones.timm_backbones.ResNet101
+  out_indices: [1,2,3,4]
+  fpn: True
+
+  image_height: ${data.image.h}
+  image_width: ${data.image.w}
+
+head:
+  _target_: cross_view_transformer.model.detr.detr3d_transformer.Detr3DHead
+
+  with_box_refine: True
+  as_two_stage: False
+  num_query: 200
+  embed_dims: 256
+  num_classes: 8
+  pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+  orientation: ${data.orientation}
+  
+  transformer:
+    _target_: cross_view_transformer.model.detr.detr3d_transformer.Detr3DTransformer
+    
+    embed_dims: ${model.head.embed_dims}
+    num_feature_levels: 4
+    num_cams: 6
+    # two_stage_num_proposals: 80
+
+    decoder:
+      _target_: cross_view_transformer.model.detr.detr3d_transformer.Detr3DTransformerDecoder
+
+      n_layer: 4
+      return_intermediate: True
+
+      d_model: 256
+      nhead: 4
+      dim_feedforward: 512
+      pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+      num_levels: ${model.head.transformer.num_feature_levels}
+      h: ${data.image.h}
+      w: ${data.image.w}
+      num_points: 1

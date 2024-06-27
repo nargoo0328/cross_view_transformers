@@ -20,9 +20,9 @@ DYNAMIC = [
     'trailer', 'construction',
     'pedestrian',
     'motorcycle', 'bicycle',
-    'emergency',
+    # 'emergency',
 ]
-STATIC2 = ['ped_crossing','walkway']#,'carpark_area']
+STATIC2 = ['ped_crossing','walkway','carpark_area']
 topology = True
 if topology:
     CLASSES = STATIC + DIVIDER + DYNAMIC + STATIC2
@@ -135,6 +135,9 @@ class NuScenesDataset(torch.utils.data.Dataset):
         bev={'h': 200, 'w': 200, 'h_meters': 100, 'w_meters': 100, 'offset': 0.0},
         lidar=False,
         radar=False,
+        tri_view=False,
+        gt_box=False,
+        **kwargs
     ):
         self.scene_name = scene_name
         self.transform = transform
@@ -148,6 +151,8 @@ class NuScenesDataset(torch.utils.data.Dataset):
         self.samples = self.parse_scene(scene_record, cameras)
         self.radar = radar
         self.lidar = lidar
+        self.tri_view = tri_view
+        self.gt_box = gt_box
 
     def parse_scene(self, scene_record, camera_rigs):
         data = []
@@ -221,7 +226,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
 
             'pose': world_from_egolidarflat.tolist(),
             'pose_inverse': egolidarflat_from_world.tolist(),
-
+            'lidar_record': egolidar,
             'cam_ids': list(camera_rig),
             'cam_channels': cam_channels,
             'intrinsics': intrinsics,
@@ -259,7 +264,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
             segmentation[mask] = count + 1
             count += 1
             center_offset[mask] = center[None] - coords[mask]
-            center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (sigma ** 2))
+            center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
 
             # orientation, h/2, w/2
             center_ohw[mask, 0:2] = ((front - center) / (np.linalg.norm(front - center) + 1e-6))[None]
@@ -392,8 +397,8 @@ class NuScenesDataset(torch.utils.data.Dataset):
             a = self.nusc.get('sample_annotation', ann_token)
             idx = self.get_category_index(a['category_name'], categories)
 
-            if int(a['visibility_token']) == 1:
-                continue
+            # if int(a['visibility_token']) == 1:
+            #     continue
             if idx is not None:
                 result[idx].append(a)
 
@@ -609,8 +614,32 @@ class NuScenesDataset(torch.utils.data.Dataset):
         out_lidar = out_lidar[:,mask]
         lidar_map = np.zeros((200,200,3),dtype=float)
         lidar_map[(out_lidar[1,:].astype(int)),(out_lidar[0,:].astype(int))] = np.transpose(np.vstack((np.ones((1,out_lidar.shape[1]),dtype=float),out_lidar[2:,:])))
-        return lidar_map
+        return lidar_map, os.path.join(self.nusc.dataroot, current_sd_rec['filename']), current_cs_rec
+    
+    def get_gt_box(self, lidar_record, anns_by_category):
+        from nuscenes.utils import data_classes
+        """ 
+            Return: 
+                List[bounding boxes] 
+                bounding boxes 8 dimensions: cx,cy,w,l,cz,h,yaw,class
+        """
+        gt_boxes = []
+        for class_index, anns in enumerate(anns_by_category):
+            for ann in anns:
+                box = data_classes.Box(ann['translation'], ann['size'], Quaternion(ann['rotation']))
 
+                # project box global -> lidar
+                yaw = Quaternion(lidar_record['rotation']).yaw_pitch_roll[0]
+                box.translate(-np.array(lidar_record['translation']))
+                box.rotate(Quaternion(scalar=np.cos(yaw / 2), vector=[0, 0, np.sin(yaw / 2)]).inverse)
+                cx, cy, cz = box.center
+                w, l, h = box.wlh
+                yaw = box.orientation.yaw_pitch_roll[0]
+                gt_boxes.append(np.array([cx, cy, l, w, cz, h, yaw, class_index]))
+        
+        gt_boxes = np.stack(gt_boxes,0) if len(gt_boxes) != 0 else np.zeros((0,8))
+        return gt_boxes
+            
     def __len__(self):
         return len(self.samples)
 
@@ -625,12 +654,14 @@ class NuScenesDataset(torch.utils.data.Dataset):
         static = self.get_static_layers(sample, STATIC)                             # 200 200 2
         dividers = self.get_line_layers(sample, DIVIDER)                            # 200 200 2
         # dynamic = self.get_dynamic_layers(sample, anns_dynamic)                     # 200 200 8
-        dynamic = self.get_dynamic_layers_triview(sample, anns_dynamic) 
+        if self.tri_view:
+            dynamic = self.get_dynamic_layers_triview(sample, anns_dynamic) 
+        else:
+            dynamic = self.get_dynamic_layers(sample, anns_dynamic)
         if topology:
             static_v2 = self.get_static_layers(sample, STATIC2)                             # 200 200 2
             # dividers_v2 = self.get_line_layers(sample, DIVIDER_v2)     
-
-            bev = np.concatenate((static, dividers, dynamic[0],static_v2), -1)                     
+            bev = np.concatenate((static, dividers, dynamic,static_v2), -1)                     
         else:
             bev = np.concatenate((static, dividers, dynamic[0]), -1)                       # 200 200 12
         assert bev.shape[2] == NUM_CLASSES
@@ -638,11 +669,18 @@ class NuScenesDataset(torch.utils.data.Dataset):
         # Additional labels for vehicles only.
         aux, visibility = self.get_dynamic_objects(sample, anns_vehicle)
         aux_ped, visibility_ped = self.get_dynamic_objects(sample, anns_ped)
-        radar, lidar = None, None
+        radar, lidar, gt_box = None, None, None
         if self.radar:
             radar = self.get_radar(sample)
         if self.lidar:
             lidar = self.get_lidar(sample)
+        if self.tri_view:
+            side, front = dynamic[1:]
+        else:
+            side = front = None
+
+        if self.gt_box:
+            gt_box = self.get_gt_box(sample['lidar_record'], anns_dynamic)
 
         # Package the data.
         data = Sample(
@@ -654,8 +692,9 @@ class NuScenesDataset(torch.utils.data.Dataset):
             visibility_ped=visibility_ped,
             radar=radar,
             lidar=lidar,
-            side=dynamic[1],
-            front=dynamic[2],
+            side=side,
+            front=front,
+            gt_box=gt_box,
             **sample
         )
 

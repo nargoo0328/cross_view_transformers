@@ -1,0 +1,40 @@
+# @package _global_
+defaults:
+  - override /model: cvt_autoencoder
+  - override /data: nuscenes_vehicle
+
+  - override /loss: objects_loss
+  - override /metrics: objects_metrics
+
+model:
+  outputs:
+    bev: [0, 1]
+    ped: [1, 2]
+
+  autoencoder:
+    _target_: cross_view_transformer.model.autoencoder.AutoEncoder
+
+    dim: ${model.encoder.dim}
+    dim_last: ${model.dim_last}
+    label_indices: [[4, 5, 6, 7, 8, 10, 11,12],[9]]
+
+    decoder: ${model.decoder}
+    outputs: ${model.outputs}
+    
+  ae_config:  
+    ckpt: '0222_233207'
+    use_decoder: False
+
+visualization:
+  flip: False
+  key: ['bev','ped']
+  # key: ['bev']
+    
+data:
+  num_classes: 15
+
+loss:
+  features_weight: 1.0
+  features:
+    _target_: cross_view_transformer.losses.Features_Loss
+    loss: L2

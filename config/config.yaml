@@ -19,15 +19,16 @@ experiment:
   save_last: True
 
 loader:
-  batch_size: 8 # 8x3
-  num_workers: 4
+  train_batch_size: 4 # 8x3
+  val_batch_size: 4
+  num_workers: 16 # 4
   pin_memory: True
   prefetch_factor: 2
 
 # AdamW
 optimizer:
-  lr: 4e-3 #4e-3
-  weight_decay: 1e-5 # 1e-5
+  lr: 4e-4 # 4e-3
+  weight_decay: 1e-3 # 1e-5
 
 # OneCycleLR
 scheduler:
@@ -40,14 +41,15 @@ scheduler:
 
 # lightning trainer
 trainer:
-  max_steps: 100001
+  max_steps : 300000
   log_every_n_steps: 40
 
-  # accelerator: cpu
-  # devices: -1
-  gpus: -1
-  precision: 32
+  devices: -1
 
+  accelerator: gpu
+  # gpus: -1
+  
+  precision: 32
   limit_train_batches: 1.0
   limit_val_batches: 1.0
   check_val_every_n_epoch: 1

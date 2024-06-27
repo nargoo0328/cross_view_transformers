@@ -1,0 +1,7 @@
+# ninja log v5
+0	17151	1709715156624804106	/media/hcis-s20/SRL/SparseBEV/models/csrc/build/temp.linux-x86_64-3.8/msmv_sampling/msmv_sampling.o	6b490ce66c0f96d9
+0	31276	1709715170760914443	/media/hcis-s20/SRL/SparseBEV/models/csrc/build/temp.linux-x86_64-3.8/msmv_sampling/msmv_sampling_forward.o	4480053cf2a7b5ed
+0	32934	1709715172416927423	/media/hcis-s20/SRL/SparseBEV/models/csrc/build/temp.linux-x86_64-3.8/msmv_sampling/msmv_sampling_backward.o	274f3db2963a320
+0	11661	1714373518949341923	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/csrc/build/temp.linux-x86_64-3.8/msmv_sampling/msmv_sampling.o	12d37d0eacea0024
+0	30469	1714373537757500029	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/csrc/build/temp.linux-x86_64-3.8/msmv_sampling/msmv_sampling_forward.o	c639f8056dfebb87
+0	30979	1714373538269504335	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/csrc/build/temp.linux-x86_64-3.8/msmv_sampling/msmv_sampling_backward.o	e79a6e1dacfb605

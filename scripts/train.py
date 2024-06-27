@@ -11,6 +11,7 @@ from cross_view_transformer.common import setup_config, setup_experiment, load_b
 from cross_view_transformer.callbacks.gitdiff_callback import GitDiffCallback
 from cross_view_transformer.callbacks.visualization_callback import VisualizationCallback
 import os
+import torch
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +65,10 @@ def main(cfg):
     trainer = pl.Trainer(logger=logger,
                          callbacks=callbacks,
                          strategy=DDPStrategy(find_unused_parameters=False),
+                         detect_anomaly=True,
                          **cfg.trainer)
+    # model_module = torch.compile(model_module)
+    # model_module.backbone = torch.compile(model_module)
     trainer.fit(model_module, datamodule=data_module, ckpt_path=ckpt_path)
 
 

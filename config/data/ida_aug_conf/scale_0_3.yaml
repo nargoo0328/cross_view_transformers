@@ -1,0 +1,8 @@
+ida_aug_conf:
+  resize_lim: [0.294,0.308] # [0.495,0.505]
+  final_dim: [224, 480]
+  bot_pct_lim: [0.0, 0.0]
+  rot_lim: [-2.5, 2.5]
+  H: 900
+  W: 1600
+  rand_flip: False

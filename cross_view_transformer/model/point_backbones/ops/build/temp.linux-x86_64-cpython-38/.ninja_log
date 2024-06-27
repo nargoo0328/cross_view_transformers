@@ -1,0 +1,6 @@
+# ninja log v5
+0	11618	1709191763784219374	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/point_backbones/ops/build/temp.linux-x86_64-cpython-38/voxelization/voxelization.o	6a187d224f82afbf
+0	11779	1709191763948220740	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/point_backbones/ops/build/temp.linux-x86_64-cpython-38/voxelization/voxelization_cpu.o	d8906f7bcd416479
+0	14262	1709191766432241414	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/point_backbones/ops/build/temp.linux-x86_64-cpython-38/voxelization/voxelization_cuda.o	f42a250ce1572784
+0	1397	1709191768140255635	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/point_backbones/ops/build/temp.linux-x86_64-cpython-38/iou3d/iou3d_kernel.o	4e1bfaa63b48373b
+0	11315	1709191778056338299	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/point_backbones/ops/build/temp.linux-x86_64-cpython-38/iou3d/iou3d.o	5352659d21806b09

@@ -11,19 +11,15 @@ def get_data(
     split,
     version,
     num_classes,
-    augment='none',
     image=None,                         # image config
-    radar=None,
-    lidar=None,
-    autoencoder=None,
-    dataset='unused',                   # ignore
     **dataset_kwargs
 ):
     dataset_dir = Path(dataset_dir)
     labels_dir = Path(labels_dir)
+
     # Override augment if not training
-    augment = 'none' if split != 'train' else augment
-    transform = LoadDataTransform(dataset_dir, labels_dir, image, num_classes,radar,lidar,autoencoder,augment=augment)
+    training = True if split == 'train' else False
+    transform = LoadDataTransform(dataset_dir, labels_dir, image, num_classes, training=training, **dataset_kwargs)
 
     # Format the split name
     split = f'mini_{split}' if version == 'v1.0-mini' else split

@@ -7,21 +7,22 @@ encoder:
 
   dim: 128
   scale: 1.0
-  middle: [2, 2]
-
+  middle: [3, 3]
+  
   backbone:
     # _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNetExtractor
 
     # model_name: efficientnet-b4
-    # layer_names: ['reduction_2', 'reduction_4']
+    # layer_names: ['reduction_3', 'reduction_4']
     _target_: cross_view_transformer.model.backbones.timm_backbones.ResNet101
-
+    out_indices: [3,4]
     image_height: ${data.image.h}
     image_width: ${data.image.w}
+    fpn: True
 
   cross_view:
     heads: 4 # 2 15744M
-    dim_head: 32 
+    dim_head: 64 
     qkv_bias: True
     skip: True
     no_image_features: False

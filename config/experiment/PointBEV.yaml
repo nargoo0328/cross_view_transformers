@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - override /model: PointBEVModel # BEVSD_model
+  - override /data: nuscenes_vehicle
+
+  - override /loss: objects_loss
+  - override /metrics: objects_metrics
+
+visualization:
+  flip: False
+  key: ['bev','ped']
+  # mask: True
+  # box: True
+    
+data:
+  num_classes: 15
+  # box: pseudo
+
+# model:
+#   box_only: True
+val_only: False
