@@ -10,7 +10,6 @@ from tqdm import tqdm
 from cross_view_transformer.data.transforms import LoadDataTransform
 from cross_view_transformer.common import setup_config, setup_data_module, setup_viz
 
-
 def setup(cfg):
     # Don't change these
     cfg.data.dataset = cfg.data.dataset.replace('_generated', '')
@@ -19,6 +18,8 @@ def setup(cfg):
     cfg.loader.persistent_workers = True
     cfg.loader.drop_last = False
     cfg.loader.shuffle = False
+    cfg.loader.__delattr__("train_batch_size")
+    cfg.loader.__delattr__("val_batch_size")
 
     # Uncomment to debug errors hidden by multiprocessing
     # cfg.loader.num_workers = 0

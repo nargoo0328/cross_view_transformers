@@ -169,7 +169,7 @@ class DetectionTransformerDecoder(nn.Module):
         self._init_layers(n_layer, **kwargs)
 
     def _init_layers(self, n_layer, **kwargs):
-        layer = SADefnAttn(**kwargs)
+        layer = DetectionTransformerDecoderLayer(**kwargs)
         self.layers = nn.ModuleList([copy.deepcopy(layer) for i in range(n_layer)])
 
     def forward(self,
@@ -237,17 +237,57 @@ class DetectionTransformerDecoder(nn.Module):
 
         return output, init_reference_out, reference_points
     
+class DetectionTransformerDecoderLayer(nn.Module):
+    def __init__(self, embed_dims, nheads, dropout=0.1, **kwargs):
+        super().__init__()
+
+        self.self_attn = nn.MultiheadAttention(embed_dims, nheads, dropout=dropout)
+        self.cross_attn = SADefnAttn(embed_dims, nheads, dropout)
+        # Implementation of Feedforward model
+        self.ffn = MLP(embed_dims, embed_dims*2, embed_dims, 2)
+
+        self.norm1 = nn.LayerNorm(embed_dims)
+        self.norm2 = nn.LayerNorm(embed_dims)
+        self.norm3 = nn.LayerNorm(embed_dims)
+        self.dropout1 = nn.Dropout(dropout)
+    
+    def with_pos_embed(self, tensor, pos):
+        return tensor if pos is None else tensor + pos
+    
+    def forward(self,
+        query=None, 
+        query_pos=None, 
+        value=None,
+        reference_points=None,
+        **kwargs
+    ):
+        q = k = self.with_pos_embed(query, query_pos)
+        tgt = self.self_attn(q, k, value=query)[0]
+        query = query + self.dropout1(tgt)
+        query = self.norm1(query)
+        query = self.cross_attn(
+            query,
+            query_pos,
+            value,
+            reference_points
+        )
+        query = self.norm2(query)
+        query = self.norm3(self.ffn(query))
+
+        return query
+
+
 class SADefnAttn(nn.Module):
     def __init__(
         self,
         in_c=128,
+        n_heads=4,
         dropout=0.1,
-        query_shape=[200, 200],
-        msdef_kwargs={"n_levels": 1, "n_heads": 4, "n_points": 8},
+        msdef_kwargs={"n_levels": 1, "n_points": 8},
     ):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
-        self.deformable_attention = MSDeformAttn(d_model=in_c, **msdef_kwargs)
+        self.deformable_attention = MSDeformAttn(d_model=in_c, n_heads=n_heads, **msdef_kwargs)
         self.mlp_out = nn.Linear(in_c, in_c)
 
     def forward(self, 
@@ -283,3 +323,25 @@ class SADefnAttn(nn.Module):
         )
 
         return self.dropout(self.mlp_out(queries)) + query_residual
+
+class MLP(nn.Module):
+    """ Very simple multi-layer perceptron (also called FFN)"""
+
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, add_identity=True, dropout=0.0):
+        super().__init__()
+        self.num_layers = num_layers
+        h = [hidden_dim] * (num_layers - 1)
+        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+        self.add_identity = add_identity
+        self.dropout = nn.Dropout(dropout) if dropout != 0.0 else nn.Identity()
+
+    def forward(self, x):
+        if self.add_identity:
+            res = x.clone()
+
+        for i, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        
+        if self.add_identity:
+            return res + self.dropout(x)
+        return self.dropout(x)

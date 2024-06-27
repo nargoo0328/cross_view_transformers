@@ -77,49 +77,53 @@ head:
     bev: [0, 1]
     ped: [1, 2]
 
+box_encoder_type: bev
+
 box_encoder:
   # BEVFormer
-  # _target_: cross_view_transformer.model.detr.BEVFormer.BEVFomerHead
-
-  # transformer:
-  #   _target_: cross_view_transformer.model.detr.BEVFormer.DetectionTransformerDecoder
-
-  #   n_layer: 4
-
-  # embed_dims: 128
-  # num_classes: 8
-  # num_query: 900
-  # num_reg_fcs: 2
-  # pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
-
-  # SparseBEV
-  _target_: cross_view_transformer.model.sparsebev.SparseHead
-
-  embed_dims: 128
-  query_type: box
-
-  # box
-  pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
-  num_classes: 8
-  num_query: 400
-  num_reg_fcs: 2
-  num_points_in_pillar: 1
+  _target_: cross_view_transformer.model.detr.BEVFormer.BEVFomerHead
 
   transformer:
-    _target_: cross_view_transformer.model.sparsebev.SparseBEVTransformerDecoder
-    
-    n_layer: 4
+    _target_: cross_view_transformer.model.detr.BEVFormer.DetectionTransformerDecoder
 
-    num_points_in_pillar: ${model.encoder.num_points_in_pillar}
-    embed_dims: ${model.encoder.embed_dims}
-    pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
-    num_levels: 4
-    h: ${data.image.h}
-    w: ${data.image.w}
-    num_points: 16
-    checkpointing: True
-    query_type: box
-    num_groups: 1
+    n_layer: 6
+    embed_dims: 128
+    nheads: 4
+
+  embed_dims: 128
+  num_classes: 8
+  num_query: 900
+  num_reg_fcs: 2
+  pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+
+  # SparseBEV
+  # _target_: cross_view_transformer.model.sparsebev.SparseHead
+
+  # embed_dims: 128
+  # query_type: box
+
+  # # box
+  # pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+  # num_classes: 8
+  # num_query: 400
+  # num_reg_fcs: 2
+  # num_points_in_pillar: 1
+
+  # transformer:
+  #   _target_: cross_view_transformer.model.sparsebev.SparseBEVTransformerDecoder
+    
+  #   n_layer: 4
+
+  #   num_points_in_pillar: ${model.encoder.num_points_in_pillar}
+  #   embed_dims: ${model.encoder.embed_dims}
+  #   pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+  #   num_levels: 4
+  #   h: ${data.image.h}
+  #   w: ${data.image.w}
+  #   num_points: 16
+  #   checkpointing: True
+  #   query_type: box
+  #   num_groups: 1
   
   # Detr3D
   # _target_: cross_view_transformer.model.detr.detr3d_transformer.Detr3DHead

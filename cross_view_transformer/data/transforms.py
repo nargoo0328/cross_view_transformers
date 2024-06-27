@@ -189,6 +189,7 @@ class SaveDataTransform:
 
         if len(result) == 0:
             result = np.array([[0,0,0,0,8]])
+
         np.savez_compressed(scene_dir / box_path, boxes=result)
         return {'boxes': box_path}
 

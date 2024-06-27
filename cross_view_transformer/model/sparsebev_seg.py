@@ -31,6 +31,7 @@ class SparseBEVSeg(nn.Module):
             decoder=nn.Identity(),
             box_encoder=None,
             scale: float = 1.0,
+            box_encoder_type='bev',
     ):
         super().__init__()
 
@@ -45,6 +46,7 @@ class SparseBEVSeg(nn.Module):
         self.head = head
         self.neck = neck
         self.box_encoder = box_encoder 
+        self.box_encoder_type = box_encoder_type
         self.decoder = decoder
 
     def forward(self, batch):
@@ -60,11 +62,12 @@ class SparseBEVSeg(nn.Module):
         x = self.decoder(x)
         
         if self.box_encoder is not None:
-            # pred_box = self.box_encoder(x)
-            # x = self.head(x)
-
-            x = self.head(x)
-            pred_box = self.box_encoder(features, lidar2img)
+            if self.box_encoder_type == 'bev':
+                x, bev = self.head(x, return_bev=True)
+                pred_box = self.box_encoder(bev)
+            elif self.box_encoder_type == 'img':
+                x = self.head(x)
+                pred_box = self.box_encoder(features, lidar2img)
 
             x.update(pred_box)
         else:

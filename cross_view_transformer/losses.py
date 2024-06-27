@@ -254,6 +254,7 @@ class MultipleLoss(torch.nn.ModuleDict):
                 weights[k] = loss_weight
 
             single_loss = loss_weight * o
+            outputs[k] = single_loss
             loss.append(single_loss)
 
         return sum(loss), outputs, weights
