@@ -9,7 +9,7 @@ backbone:
   fpn: True
   embed_dims: ${model.encoder.embed_dims}
 
-  # freeze_layers: [layer1]
+  freeze_layers: [layer1]
 
   image_height: ${data.image.h}
   image_width: ${data.image.w}
@@ -86,13 +86,13 @@ box_encoder:
   transformer:
     _target_: cross_view_transformer.model.detr.BEVFormer.DetectionTransformerDecoder
 
-    n_layer: 6
+    n_layer: 2
     embed_dims: 128
     nheads: 4
 
   embed_dims: 128
   num_classes: 8
-  num_query: 900
+  num_query: 300
   num_reg_fcs: 2
   pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
 

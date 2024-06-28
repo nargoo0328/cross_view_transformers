@@ -243,13 +243,11 @@ class DetectionTransformerDecoderLayer(nn.Module):
 
         self.self_attn = nn.MultiheadAttention(embed_dims, nheads, dropout=dropout)
         self.cross_attn = SADefnAttn(embed_dims, nheads, dropout)
-        # Implementation of Feedforward model
         self.ffn = MLP(embed_dims, embed_dims*2, embed_dims, 2)
 
         self.norm1 = nn.LayerNorm(embed_dims)
         self.norm2 = nn.LayerNorm(embed_dims)
         self.norm3 = nn.LayerNorm(embed_dims)
-        self.dropout1 = nn.Dropout(dropout)
     
     def with_pos_embed(self, tensor, pos):
         return tensor if pos is None else tensor + pos
@@ -263,7 +261,7 @@ class DetectionTransformerDecoderLayer(nn.Module):
     ):
         q = k = self.with_pos_embed(query, query_pos)
         tgt = self.self_attn(q, k, value=query)[0]
-        query = query + self.dropout1(tgt)
+        query = query + tgt
         query = self.norm1(query)
         query = self.cross_attn(
             query,
