@@ -1,4 +1,0 @@
-# ninja log v5
-0	3816	1718308439312548416	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/ops/defattn/build/temp.linux-x86_64-3.8/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/ops/defattn/src/cpu/ms_deform_attn_cpu.o	69b6d16732b78ea0
-1	11700	1718308447196589050	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/ops/defattn/build/temp.linux-x86_64-3.8/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/ops/defattn/src/vision.o	e1dc2124e637dcf4
-0	12519	1718308448016593302	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/ops/defattn/build/temp.linux-x86_64-3.8/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/ops/defattn/src/cuda/ms_deform_attn_cuda.o	ae6a9401685125ec

@@ -1,4 +1,0 @@
-# ninja log v5
-0	12913	1714373362716036361	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/csrc/build/temp.linux-x86_64-cpython-38/msmv_sampling/msmv_sampling.o	c358a7972a1c1362
-0	30906	1714373380708185929	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/csrc/build/temp.linux-x86_64-cpython-38/msmv_sampling/msmv_sampling_forward.o	80783e5383b13509
-0	31786	1714373381592193284	/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/cross_view_transformer/model/csrc/build/temp.linux-x86_64-cpython-38/msmv_sampling/msmv_sampling_backward.o	a199c8781465bc07
