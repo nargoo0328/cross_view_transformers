@@ -11,3 +11,5 @@ timm==0.9.16
 tqdm==4.65.2
 wandb==0.15.5
 imgaug==0.4.0
+setuptools==60.2.0
+jupyter

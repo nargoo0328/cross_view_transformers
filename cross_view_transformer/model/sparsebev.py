@@ -963,12 +963,25 @@ class SparseBEVSelfAttention(nn.Module):
         key = k if k is not None else q
 
         attn_mask = attn_mask.flatten(0, 1)  # [B x num_heads, Q, K]
+
+        # print(attn_mask[0,1225,2500:].sum(),attn_mask[0,1225,:2500].sum())
+        # print(attn_mask[0,1275,2500:].sum(), attn_mask[0,1275,:2500].sum())
+        # import numpy as np
+        # att_map = np.zeros((50,50))
+        # for i, att_value in enumerate(attn_mask[0,1225,:2500]):
+        #     att_map[i//50, i%50] = att_value
+        # import matplotlib.pyplot as plt
+        # plt.imshow(att_map)
+
         q = self.attention(
             query=q,
             key=key,
             value=v,
             attn_mask=attn_mask,
         )[0]
+        # q = tmp[0]
+        # v_t, index_t = torch.topk(tmp[1][0,1225], 50)
+        # print(v_t, index_t)
 
         if self.down is not None:
             q = rearrange(q, 'b (h w) d -> b d h w', h=50, w=50)

@@ -148,6 +148,9 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
 
     def forward(self, pred, batch):
         if isinstance(pred, dict):
+            if f"{self.key}_aux" in pred:
+                pass
+            
             pred_mask = pred['mask'][:, None] if 'mask' in pred else None
             pred = pred[self.key]
         

@@ -30,8 +30,9 @@ Set:
   weight_dict: 
     labels: 0.1
     boxes: 0.1
+    
   eos_coef: 0.1
-  aux_weight: 0.05
+  aux_weight: 0.1
   losses: ['labels', 'boxes']
 
 loss_ce_weight: 0.002 # 0.02

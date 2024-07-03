@@ -128,27 +128,41 @@ class IoUMetric(BaseIoUMetric):
         return super().update(pred, label)
 
 class BoxMAPMetric(MeanAveragePrecision):
-    def __init__(self, output_format, metrics_setting=None):
+    def __init__(self, box_3d, output_format, metrics_setting=None):
         self.output_format = output_format
+        self.box_3d = box_3d
         super().__init__(**metrics_setting)
         # super().__init__()
     
     def update(self, pred, batch):
         # parse format
-        boxes = pred['pred_boxes'][...,:4].clone().detach()
-        boxes[...,2:4] = boxes[...,2:4].exp()
-        if boxes.ndim == 4:
-            boxes = boxes[-1]
-        boxes = box_cxcywh_to_xyxy(boxes, transform=True)
-        boxes = lidar_to_bev(boxes, batch['view'].detach())
+        if self.box_3d:
+            boxes = pred['pred_boxes'][...,:4].clone().detach()
+            boxes[...,2:4] = boxes[...,2:4].exp()
+            if boxes.ndim == 4:
+                boxes = boxes[-1]
+            boxes = box_cxcywh_to_xyxy(boxes, transform=True)
+            boxes = lidar_to_bev(boxes, batch['view'].detach())
 
-        boxes_gt = []
-        for i in range(len(batch['boxes'])):
-            batch_boxes_gt = batch['boxes'][i][:,:4].clone().detach()
-            batch_boxes_gt[...,2:4] = batch_boxes_gt[...,2:4].exp()
-            boxes_gt.append(box_cxcywh_to_xyxy(batch_boxes_gt, transform=True))
-        boxes_gt = [lidar_to_bev(batch_boxes_gt.unsqueeze(0), batch['view'][:1].detach())[0] for batch_boxes_gt in boxes_gt]
-        
+            boxes_gt = []
+            for i in range(len(batch['boxes'])):
+                batch_boxes_gt = batch['boxes'][i][:,:4].clone().detach()
+                batch_boxes_gt[...,2:4] = batch_boxes_gt[...,2:4].exp()
+                boxes_gt.append(box_cxcywh_to_xyxy(batch_boxes_gt, transform=True))
+            boxes_gt = [lidar_to_bev(batch_boxes_gt.unsqueeze(0), batch['view'][:1].detach())[0] for batch_boxes_gt in boxes_gt]
+        else:
+            boxes = pred['pred_boxes'].clone().detach()
+            boxes = boxes * 200
+            if boxes.ndim == 4:
+                boxes = boxes[-1]
+            boxes = box_cxcywh_to_xyxy(boxes, transform=False)
+
+            boxes_gt = []
+            for i in range(len(batch['boxes'])):
+                batch_boxes_gt = batch['boxes'][i].clone().detach()
+                batch_boxes_gt = batch_boxes_gt * 200
+                boxes_gt.append(box_cxcywh_to_xyxy(batch_boxes_gt, transform=False))
+
         pred_logits = pred['pred_logits'].clone().detach()
         scores, labels = pred_logits.softmax(-1)[:, :, :-1].max(-1)
         preds = [{'boxes': box, 'scores': score, 'labels': label} for box, score, label in zip(boxes,scores,labels)]

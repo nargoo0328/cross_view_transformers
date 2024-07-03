@@ -27,7 +27,7 @@ loader:
 
 # AdamW
 optimizer:
-  lr: 2e-4 # 4e-3
+  lr: 4e-4 # 4e-3
   weight_decay: 1e-2 # 1e-5
 
 # OneCycleLR

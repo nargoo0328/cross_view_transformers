@@ -47,13 +47,14 @@ class BEVFomerHead(nn.Module):
         self._init_box_layers(**kwargs)
         self.init_weights()
             
-    def _init_box_layers(self, num_classes=0, num_query=100, num_reg_fcs=2, **kwargs):
+    def _init_box_layers(self, num_classes=0, num_query=100, num_reg_fcs=2, box_3d=True, **kwargs):
         
         self.num_classes = num_classes
         self.num_query = num_query
-
+        self.box_3d = box_3d
         self.query_embedding = nn.Embedding(self.num_query, self.embed_dims * 2)
-        self.reference_points = nn.Linear(self.embed_dims, 3)
+        dimension = 3 if box_3d else 2
+        self.reference_points = nn.Linear(self.embed_dims, dimension)
         # torch.nn.init.xavier_uniform_(self.reference_points, distribution='uniform', bias=0.)
         
         cls_branch = []
@@ -64,11 +65,12 @@ class BEVFomerHead(nn.Module):
         cls_branch.append(nn.Linear(self.embed_dims, self.num_classes + 1))
         fc_cls = nn.Sequential(*cls_branch)
 
+        dimension = 6 if box_3d else 4
         reg_branch = []
         for _ in range(num_reg_fcs):
             reg_branch.append(nn.Linear(self.embed_dims, self.embed_dims))
             reg_branch.append(nn.ReLU())
-        reg_branch.append(nn.Linear(self.embed_dims, 6))
+        reg_branch.append(nn.Linear(self.embed_dims, dimension))
         reg_branch = nn.Sequential(*reg_branch)
 
         def _get_clones(module, N):
@@ -125,17 +127,21 @@ class BEVFomerHead(nn.Module):
             tmp = self.reg_branches[lvl](hs[lvl])
 
             # TODO: check the shape of reference
-            assert reference.shape[-1] == 3
-            tmp[..., 0:2] += reference[..., 0:2]
-            tmp[..., 0:2] = tmp[..., 0:2].sigmoid()
-            tmp[..., 4:5] += reference[..., 2:3]
-            tmp[..., 4:5] = tmp[..., 4:5].sigmoid()
-            tmp[..., 0:1] = (tmp[..., 0:1] * (self.pc_range[3] -
-                             self.pc_range[0]) + self.pc_range[0])
-            tmp[..., 1:2] = (tmp[..., 1:2] * (self.pc_range[4] -
-                             self.pc_range[1]) + self.pc_range[1])
-            tmp[..., 4:5] = (tmp[..., 4:5] * (self.pc_range[5] -
-                             self.pc_range[2]) + self.pc_range[2])
+            if reference.shape[-1] == 3:
+                tmp[..., 0:2] += reference[..., 0:2]
+                tmp[..., 0:2] = tmp[..., 0:2].sigmoid()
+                tmp[..., 4:5] += reference[..., 2:3]
+                tmp[..., 4:5] = tmp[..., 4:5].sigmoid()
+                tmp[..., 0:1] = (tmp[..., 0:1] * (self.pc_range[3] -
+                                self.pc_range[0]) + self.pc_range[0])
+                tmp[..., 1:2] = (tmp[..., 1:2] * (self.pc_range[4] -
+                                self.pc_range[1]) + self.pc_range[1])
+                tmp[..., 4:5] = (tmp[..., 4:5] * (self.pc_range[5] -
+                                self.pc_range[2]) + self.pc_range[2])
+            else:
+                assert reference.shape[-1] == 2 
+                tmp[..., 0:2] += reference[..., 0:2]
+                tmp[..., 0:2] = tmp[..., 0:2].sigmoid()
 
             # TODO: check if using sigmoid
             outputs_coord = tmp
@@ -214,17 +220,26 @@ class DetectionTransformerDecoder(nn.Module):
             if reg_branches is not None:
                 tmp = reg_branches[lid](output)
 
-                assert reference_points.shape[-1] == 3
+                if reference_points.shape[-1] == 3:
+                    new_reference_points = torch.zeros_like(reference_points)
+                    new_reference_points[..., :2] = tmp[
+                        ..., :2] + inverse_sigmoid(reference_points[..., :2])
+                    new_reference_points[..., 2:3] = tmp[
+                        ..., 4:5] + inverse_sigmoid(reference_points[..., 2:3])
 
-                new_reference_points = torch.zeros_like(reference_points)
-                new_reference_points[..., :2] = tmp[
-                    ..., :2] + inverse_sigmoid(reference_points[..., :2])
-                new_reference_points[..., 2:3] = tmp[
-                    ..., 4:5] + inverse_sigmoid(reference_points[..., 2:3])
+                    new_reference_points = new_reference_points.sigmoid()
 
-                new_reference_points = new_reference_points.sigmoid()
+                    reference_points = new_reference_points.detach()
+                else:
+                    assert reference_points.shape[-1] == 2 
 
-                reference_points = new_reference_points.detach()
+                    new_reference_points = torch.zeros_like(reference_points)
+                    new_reference_points[..., :2] = tmp[
+                        ..., :2] + inverse_sigmoid(reference_points[..., :2])
+
+                    new_reference_points = new_reference_points.sigmoid()
+
+                    reference_points = new_reference_points.detach()
 
             # output = output.permute(1, 0, 2)
             if self.return_intermediate:

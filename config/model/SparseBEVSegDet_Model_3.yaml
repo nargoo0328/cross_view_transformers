@@ -8,7 +8,7 @@ backbone:
   out_indices: [1,2,3,4]
   fpn: True
 
-  freeze_layers: [layer1]
+  # freeze_layers: [layer1]
   embed_dims: ${model.encoder.embed_dims}
 
   image_height: ${data.image.h}
@@ -36,7 +36,7 @@ encoder:
 
   embed_dims: 128
   _bev: True
-  _box: True
+  _box: False
 
   # bev
   H: 200
@@ -50,7 +50,7 @@ encoder:
   transformer:
     _target_: cross_view_transformer.model.sparsebev_seg.DetSegTransformerDecoder
     
-    num_layers: 2
+    num_layers: 1
     num_groups: 1
     pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
 
@@ -59,6 +59,7 @@ encoder:
     h: ${data.image.h}
     w: ${data.image.w}
     num_points: 8
+    bev_only: True
 
 # decoder:
 #   _target_: cross_view_transformer.model.decoder.BEVDecoder

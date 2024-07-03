@@ -58,24 +58,28 @@ encoder:
     num_groups: 1
     scale: 1.0
 
-head:
-  _target_: cross_view_transformer.model.decoder.SegHead
+decoder:
+  _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+  in_channels: 128
 
-  dim_last: 128
-  multi_head: True
-  decoder:
-    # _target_: cross_view_transformer.model.decoder.BEVDecoder
+# head:
+#   _target_: cross_view_transformer.model.decoder.SegHead
+
+#   dim_last: 128
+#   multi_head: True
+#   decoder:
+#     # _target_: cross_view_transformer.model.decoder.BEVDecoder
     
-    # dim: ${model.encoder.embed_dims}
-    # blocks: [128, 128]
-    # residual: True
-    # factor: 2
-    _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-    in_channels: 128
+#     # dim: ${model.encoder.embed_dims}
+#     # blocks: [128, 128]
+#     # residual: True
+#     # factor: 2
+#     _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+#     in_channels: ${model.encoder.embed_dims}
 
-  outputs:
-    bev: [0, 1]
-    ped: [1, 2]
+#   outputs:
+#     bev: [0, 1]
+#     ped: [1, 2]
 
 box_encoder_type: bev
 
@@ -86,15 +90,16 @@ box_encoder:
   transformer:
     _target_: cross_view_transformer.model.detr.BEVFormer.DetectionTransformerDecoder
 
-    n_layer: 2
-    embed_dims: 128
+    n_layer: 4
+    embed_dims: ${model.encoder.embed_dims}
     nheads: 4
 
-  embed_dims: 128
+  embed_dims: ${model.encoder.embed_dims}
   num_classes: 8
-  num_query: 300
+  num_query: 400
   num_reg_fcs: 2
   pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+  box_3d: ${data.box_3d}
 
   # SparseBEV
   # _target_: cross_view_transformer.model.sparsebev.SparseHead

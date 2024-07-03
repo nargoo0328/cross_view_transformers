@@ -424,9 +424,10 @@ class BaseViz:
         
         view = batch['view'][b].cpu().numpy()
         gtBox_bev = np.zeros((200,200,3),np.uint8)
+        gtBox_bev += 200
         labels = batch['labels'][b].clone().detach()
         gt_box = batch['boxes'][b].clone().detach()
-        gt_box[:,2:4] = gt_box[:,2:4].exp()
+        gt_box = gt_box * 200
         gt_box = gt_box.cpu().numpy()
         gt_box = box_cxcywh_to_xyxy(gt_box, transform=False)
 
@@ -441,6 +442,7 @@ class BaseViz:
             return [gtBox_bev]
         
         predBox_bev = np.zeros((200,200,3),np.uint8)
+        predBox_bev += 200
         pred_boxes = pred['pred_boxes'].clone().detach()
         pred_logits = pred['pred_logits'].clone().detach()
 
@@ -450,15 +452,13 @@ class BaseViz:
             
         pred_boxes = pred_boxes[b]
         pred_logits = pred_logits[b]
-        pred_boxes[:,2:4] = pred_boxes[:,2:4].exp()
 
         scores, labels = pred_logits.softmax(-1)[:, :-1].max(-1) # N, num_classes
+        
+        pred_boxes = (pred_boxes * 200).cpu().numpy()
+        pred_boxes = box_cxcywh_to_xyxy(pred_boxes, transform=False)
 
-        pred_box = pred_boxes[:,:4].cpu().numpy()
-        pred_box = box_cxcywh_to_xyxy(pred_box, transform=True)
-        # pred_box = pred_box * 100 - 50 
-        # for box, logit in zip(pred_box,pred_logits):
-        for (x1,y1,x2,y2), score, label in zip(pred_box, scores, labels):
+        for (x1,y1,x2,y2), score, label in zip(pred_boxes, scores, labels):
             if score < threshold:
                 continue
             if not check_index(x1, y1, x2, y2):

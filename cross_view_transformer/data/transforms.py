@@ -461,10 +461,12 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         assert self.box == 'pseudo'
         det = np.load(scene_dir / sample.boxes)['boxes']
-        tmp_boxes = np.zeros((len(det),4)) # cx, cy, w, h
-        tmp_boxes[:,:4] = (det[:,:4] * 100) - 50
+        tmp_boxes = (det[:, :4] * 100) - 50
         labels = det[:,4].astype(np.int_)
 
+        if (labels == 8).any() or len(det)==0:
+            return {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0,4)).astype(np.float32)}
+        
         # lidar coordinate -> image coordinate
         pts = np.concatenate((tmp_boxes, np.ones((len(tmp_boxes),1))), axis=1).transpose()
         tmp_boxes = (view.numpy() @ pts)[:4].transpose()
@@ -474,18 +476,15 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         boxes[:,1] = (tmp_boxes[:,1] + tmp_boxes[:,3]) / 2
         boxes[:,2] = tmp_boxes[:,2] - tmp_boxes[:,0]
         boxes[:,3] = tmp_boxes[:,3] - tmp_boxes[:,1]
-        boxes[:,2:4] = np.where(boxes[:,2:4] == 0, 1.1, boxes[:,2:4])
-    
-    
-        if (labels == 8).any() or len(boxes)==0:
-            return {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0,4)).astype(np.float32)}
-        
-        boxes[:,2:4] = np.log(boxes[:,2:4])
+        boxes[:,2:4] = np.where(boxes[:,2:4] == 0, 1.0, boxes[:,2:4])
+
+        # normalized
+        boxes = boxes / 200.0
 
         if self.no_class:
             labels = np.zeros_like(labels)
 
-        return {'labels':labels,'boxes':boxes.astype(np.float32)}
+        return {'labels':labels, 'boxes':boxes.astype(np.float32)}
 
     # copied from PointBEV
     def _prepare_augmented_boxes(self, bev_aug, points, inverse=True):

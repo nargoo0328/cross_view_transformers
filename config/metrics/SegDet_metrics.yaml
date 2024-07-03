@@ -9,6 +9,7 @@ iou_ped:
 
 box_map:
   _target_: cross_view_transformer.metrics.BoxMAPMetric
+  box_3d: ${data.box_3d}
   output_format: ['map', 'map_50', 'map_75']
   metrics_setting:
     box_format: xyxy

@@ -1,9 +1,12 @@
 Set:
   _target_: cross_view_transformer.set_loss.SetCriterion
 
-  num_classes: ${model.encoder.num_classes}
+  num_classes: 8
   matcher: 
     _target_: cross_view_transformer.matcher.HungarianMatcher
+
+    cost_class: ${loss.loss_ce_weight}
+    cost_bbox: ${loss.loss_bbox_weight}
   
   weight_dict: 
     labels: 0.1
@@ -11,8 +14,8 @@ Set:
   eos_coef: 0.1
   losses: ['labels', 'boxes']
 
-loss_ce_weight: 0.1
-loss_bbox_weight: 0.5
+loss_ce_weight: 0.2
+loss_bbox_weight: 1.0
 # loss_giou_weight: 2.0
 class_error_weight: 0.0
 aux_weight: 0.1

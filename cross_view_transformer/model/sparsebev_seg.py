@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from .common import Normalize
 from .csrc.wrapper import msmv_sampling
 from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
 import copy
 # from .checkpoint import checkpoint as cp
 
@@ -57,19 +58,23 @@ class SparseBEVSeg(nn.Module):
         if self.neck is not None:
             features = self.neck(features)
             features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
-        
+
         output = {}
+        
+        if self.box_encoder_type == 'img':
+            pred_box = self.box_encoder(features, lidar2img)
+            output.update(pred_box)
+
         if self.encoder is not None:
             x = self.encoder(features, lidar2img)
             x = self.decoder(x)
-            pred_bev, bev = self.head(x, return_bev=True)
+
+        if self.head is not None:
+            pred_bev = self.head(x)
             output.update(pred_bev)
         
-        if self.box_encoder is not None:
-            if self.box_encoder_type == 'bev':
-                pred_box = self.box_encoder(bev)
-            elif self.box_encoder_type == 'img':
-                pred_box = self.box_encoder(features, lidar2img)
+        if self.box_encoder_type == 'bev':
+            pred_box = self.box_encoder(x)
 
             output.update(pred_box)
 
@@ -244,12 +249,12 @@ class SparseBEVTransformerDecoderLayer(nn.Module):
         #     nn.LayerNorm(self.embed_dims),
         #     nn.GELU(),
         # )
-        self.position_encoder = PositionalEncodingMap()
+        self.position_encoder = PositionalEncodingMap(out_c=embed_dims, mid_c=embed_dims * 2)
 
         self.sampling = SparseBEVSampling(embed_dims, num_groups=num_groups, num_points=num_points, num_levels=num_levels, pc_range=pc_range, h=h, w=w, checkpointing=checkpointing, num_points_in_pillar=num_points_in_pillar, scale=scale)   
         # self.ffn = MLP(num_points * embed_dims, 512, embed_dims, 2)       
         # self.norm = nn.LayerNorm(embed_dims)
-        self.compressor = MLP(8*128, 512, 128, 4, as_conv=True)
+        self.compressor = MLP(8*embed_dims, embed_dims*4, embed_dims, 4, as_conv=True)
         # self.out_c = nn.Sequential(
         #     nn.Conv2d(num_points * embed_dims, embed_dims, 3, padding=1),
         #     nn.InstanceNorm2d(embed_dims),
@@ -577,6 +582,7 @@ class DetSegHead(nn.Module):
             bev_pos = repeat(bev_pos, '... -> b ...', b=b)
         else:
             bev_query = bev_pos = None
+            
         if self.box:
             det_query = repeat(self.det_query.weight, '... -> b ...', b=b)
             det_pos = repeat(self.init_query_bbox.weight, '... -> b ...', b=b)
@@ -612,12 +618,12 @@ class DetSegTransformerDecoder(nn.Module):
             `LN`.
     """
 
-    def __init__(self, embed_dims, num_points=4, num_groups=1, num_layers=6, num_levels=4, pc_range=[], h=0, w=0, **kwargs):
+    def __init__(self, embed_dims, num_points=4, num_groups=1, num_layers=6, num_levels=4, pc_range=[], h=0, w=0, bev_only=False, **kwargs):
         super().__init__()
         self.num_layers = num_layers
         self.num_groups = num_groups
         self.pc_range = pc_range
-        self.layer = DetSegTransformerDecoderLayer(embed_dims, num_points, num_groups, num_levels, pc_range, h, w)
+        self.layer = DetSegTransformerDecoderLayer(embed_dims, num_points, num_groups, num_levels, pc_range, h, w, bev_only)
 
     def refine_bbox(self, bbox_proposal, bbox_delta):
         xyz = inverse_sigmoid(bbox_proposal[..., 0:3])
@@ -690,6 +696,8 @@ class DetSegTransformerDecoder(nn.Module):
 
                 cls_scores.append(cls_score)
                 bbox_preds.append(bbox_pred)
+            else:
+                det_query = None
         
         if cls_branches is not None:
             cls_scores = torch.stack(cls_scores)
@@ -706,7 +714,7 @@ class DetSegTransformerDecoder(nn.Module):
         return bev_query, box_output
 
 class DetSegTransformerDecoderLayer(nn.Module):
-    def __init__(self, embed_dims, num_points, num_groups, num_levels, pc_range, h, w):
+    def __init__(self, embed_dims, num_points, num_groups, num_levels, pc_range, h, w, bev_only):
         super().__init__()
 
         self.embed_dims = embed_dims
@@ -715,20 +723,29 @@ class DetSegTransformerDecoderLayer(nn.Module):
 
         self.position_encoder = PositionalEncodingMap(out_c=embed_dims, mid_c=embed_dims * 2)
         self.compressor = MLP(num_points * embed_dims, embed_dims * 4, embed_dims, 3, as_conv=True)
+        if not bev_only:
+            self.self_attn = SparseBEVSelfAttention(embed_dims, num_heads=4, dropout=0.1, pc_range=pc_range, checkpointing=True)
+            self.self_attn.init_weights()
 
-        self.self_attn = SparseBEVSelfAttention(embed_dims, num_heads=4, dropout=0.1, pc_range=pc_range, checkpointing=True)
+        self.in_conv = nn.Sequential(
+            Rearrange('b (h w) d -> b d h w', h=200, w=200),
+            nn.Conv2d(embed_dims, embed_dims, 1),
+            nn.GELU(),
+            nn.Conv2d(embed_dims, embed_dims, 5, padding=2),
+            Rearrange('b d h w -> b (h w) d'),
+        )
         # self.mixing = AdaptiveMixing(in_dim=embed_dims, in_points=num_points, n_groups=num_groups, out_points=embed_dims, checkpointing=True)
         self.sampling = DetSegSampling(embed_dims, num_groups=num_groups, num_points=num_points, num_levels=num_levels, pc_range=pc_range, h=h, w=w)
-        # self.ffn = MLP_sparse(embed_dims, 512, embed_dims, 2)
+        self.ffn = MLP_sparse(embed_dims, embed_dims, embed_dims, 2)
 
         self.norm1 = nn.LayerNorm(embed_dims)
         self.norm2 = nn.LayerNorm(embed_dims)
-        # self.norm3 = nn.LayerNorm(embed_dims)
+        self.norm3 = nn.LayerNorm(embed_dims)
         
         self.init_weights()
 
     def init_weights(self):
-        self.self_attn.init_weights()
+        # self.self_attn.init_weights()
         self.sampling.init_weights()
         # self.mixing.init_weights()
 
@@ -759,19 +776,29 @@ class DetSegTransformerDecoderLayer(nn.Module):
                 det_pos, 
             ):
         
-        query, query_pos, det_query_index = self._parse_input(bev_query, bev_pos, det_query, det_pos)
-        res_q = query
+        # query, query_pos, det_query_index = self._parse_input(bev_query, bev_pos, det_query, det_pos)
+        det_query_index = bev_query.shape[1]
 
-        pos_embed = self.position_encoder(query_pos)
-        query = query + pos_embed
+        bev_pos_embed = self.position_encoder(bev_pos)
+        bev_query_embed = bev_query + bev_pos_embed
+        bev_query = bev_query + self.in_conv(bev_query_embed)
 
-        # self attention only performs on det queries
-        query = self.norm1(self.self_attn(query_pos, query, None, query))
+        if det_query is not None:
+            det_pos_embed = self.position_encoder(det_pos[..., :3])
+            det_query_embed = det_query + det_pos_embed
+            # self attention only performs on det queries
+            det_query = det_query + self.self_attn(det_pos, det_query_embed, None, det_query)
+        else:
+            det_query = torch.empty((0)).to(bev_query.device)
+            det_pos = torch.empty((0)).to(bev_query.device)
+
+        query = torch.cat([bev_query, det_query],dim=1)
+        query = self.norm1(query)
 
         sampled_feat = self.sampling(
             query,
             mlvl_feats,
-            query_pos,
+            torch.cat([bev_pos, det_pos[..., :3]],dim=1),
             lidar2img
         )
 
@@ -790,13 +817,65 @@ class DetSegTransformerDecoderLayer(nn.Module):
 
         sampled_feat = rearrange(sampled_feat, 'b q g p c -> b (p g c) q 1')
         sampled_feat = self.compressor(sampled_feat).squeeze(-1) # b d (q1+q2)
-        sampled_feat = self.norm2(rearrange(sampled_feat, 'b d q -> b q d'))
-        query = res_q + sampled_feat
+        query = query + rearrange(sampled_feat, 'b d q -> b q d')
+        query = self.norm2(query)
+        query = query + self.ffn(query)
+        query = self.norm3(query)
 
         bev_query = query[:, :det_query_index]
         det_query = query[:, det_query_index:]
 
         return bev_query, det_query
+
+    # def forward(self,
+    #             mlvl_feats, 
+    #             lidar2img,
+    #             bev_query, 
+    #             bev_pos, 
+    #             det_query, 
+    #             det_pos, 
+    #         ):
+        
+    #     query, query_pos, det_query_index = self._parse_input(bev_query, bev_pos, det_query, det_pos)
+
+    #     pos_embed = self.position_encoder(query_pos)
+    #     query_embed = query + pos_embed
+
+    #     # self attention only performs on det queries
+    #     query = query + self.self_attn(query_pos, query_embed, None, query)
+    #     query = self.norm1(query)
+
+    #     sampled_feat = self.sampling(
+    #         query,
+    #         mlvl_feats,
+    #         query_pos,
+    #         lidar2img
+    #     )
+
+    #     # bev_query = query[:, :det_query_index]
+    #     # det_query = query[:, det_query_index:]
+    #     # bev_sampled_feat = sampled_feat[:, :det_query_index]
+    #     # det_sampled_feat = sampled_feat[:, det_query_index:]
+
+    #     # det_query = self.norm2(self.mixing(det_sampled_feat, det_query))
+    #     # det_query = self.norm3(self.ffn(det_query))
+    #     # # 
+    #     # bev_sampled_feat = rearrange(bev_sampled_feat, 'b q g p c -> b (p g c) q 1')
+    #     # bev_sampled_feat = self.compressor(bev_sampled_feat).squeeze(-1) # b d (q1+q2)
+    #     # bev_sampled_feat = rearrange(bev_sampled_feat, 'b d q -> b q d')
+    #     # bev_query = bev_query + bev_sampled_feat
+
+    #     sampled_feat = rearrange(sampled_feat, 'b q g p c -> b (p g c) q 1')
+    #     sampled_feat = self.compressor(sampled_feat).squeeze(-1) # b d (q1+q2)
+    #     query = query + rearrange(sampled_feat, 'b d q -> b q d')
+    #     query = self.norm2(query)
+    #     query = query + self.ffn(query)
+    #     query = self.norm3(query)
+
+    #     bev_query = query[:, :det_query_index]
+    #     det_query = query[:, det_query_index:]
+
+    #     return bev_query, det_query
     
 class DetSegSampling(nn.Module):
     """Adaptive Spatio-temporal Sampling"""
@@ -811,7 +890,7 @@ class DetSegSampling(nn.Module):
         self.pc_range = pc_range
 
         self.sampling_offset = nn.Linear(embed_dims, num_groups * num_points * 3)
-        self.scale_weights = nn.Linear(embed_dims, num_points * num_groups * num_levels) if num_levels!= 1 else None
+        self.scale_weights = nn.Linear(embed_dims, num_groups * num_points * num_levels) if num_levels!= 1 else None
 
     def init_weights(self):
         bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
@@ -830,16 +909,15 @@ class DetSegSampling(nn.Module):
                         )
 
         reference_points = rearrange(reference_points, 'b q d -> b q 1 1 d', d=3).clone()
-
         reference_points[..., 0:1] = (reference_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
         reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
         reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
  
         reference_points = reference_points + sampling_offset # b q g p d
-        # print(reference_points[0,1240:1250,0,:4].reshape(-1,3))
+
         if self.scale_weights is not None:
             # scale weights
-            scale_weights = rearrange(self.scale_weights(query), 'b q (p g l) -> b q g 1 p l',p=self.num_points, g=self.num_groups, l=self.num_levels) # b q g 1 p l
+            scale_weights = rearrange(self.scale_weights(query), 'b q (g p l) -> b q g 1 p l', p=self.num_points, g=self.num_groups, l=self.num_levels) # b q g 1 p l
             scale_weights = scale_weights.softmax(-1) 
         else:
             # no scale     
@@ -855,3 +933,47 @@ class DetSegSampling(nn.Module):
         )  # [B, Q, G, P, C]
         
         return sampled_feats
+    
+# class DetSegCrossAttention(nn.Module):
+#     def __init__(self, embed_dims, topk_bev, topk_det, pc_range):
+#         super().__init__()
+#         self.embed_dims = embed_dims
+#         self.topk_bev = topk_bev
+#         self.topk_det = topk_det
+#         self.pc_range = pc_range
+    
+#     @torch.no_grad()
+#     def calc_bbox_dists(self, bev_pos, det_pos):
+#         B = bev_pos.shape[0]
+
+#         bev_pos = bev_pos[..., :2].clone()
+
+#         bev_pos[..., 0:1] = bev_pos[..., 0:1]*(self.pc_range[3] - self.pc_range[0]) + self.pc_range[0]
+#         bev_pos[..., 1:2] = bev_pos[..., 1:2]*(self.pc_range[4] - self.pc_range[1]) + self.pc_range[1]
+
+#         det_pos = det_pos[..., :2].clone()
+        
+#         det_pos[..., 0:1] = det_pos[..., 0:1]*(self.pc_range[3] - self.pc_range[0]) + self.pc_range[0]
+#         det_pos[..., 1:2] = det_pos[..., 1:2]*(self.pc_range[4] - self.pc_range[1]) + self.pc_range[1]
+
+#         dist = []
+#         for b in range(B):
+#             tmp = torch.norm(bev_pos[b].reshape(-1, 1, 2) - det_pos[b].reshape(1, -1, 2), dim=-1)
+#             dist.append(tmp[None, ...])
+
+#         dist = torch.cat(dist, dim=0)  # [B, Q1, Q2]
+#         dist = -dist
+
+#         return dist
+
+#     def forward(self, bev_query, bev_pos, det_query, det_pos):
+#         """
+#             bev_query: B Q1 d
+#             det_query: B Q2 d
+#         """
+#         B = bev_query.shape[0]
+#         dist = self.calc_bbox_dists(bev_pos, det_pos) # B Q1 Q2
+#         _, bev_to_det_index = torch.topk(dist, self.topk_bev, dim=-1)
+#         _, det_to_bev_index = torch.topk(dist, self.topk_det, dim=-2)
+#         selected
+#         return
