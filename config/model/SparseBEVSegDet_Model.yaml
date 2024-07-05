@@ -62,24 +62,24 @@ decoder:
   _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
   in_channels: 128
 
-# head:
-#   _target_: cross_view_transformer.model.decoder.SegHead
+head:
+  _target_: cross_view_transformer.model.decoder.SegHead
 
-#   dim_last: 128
-#   multi_head: True
-#   decoder:
-#     # _target_: cross_view_transformer.model.decoder.BEVDecoder
+  dim_last: 128
+  multi_head: True
+  # decoder:
+    # _target_: cross_view_transformer.model.decoder.BEVDecoder
     
-#     # dim: ${model.encoder.embed_dims}
-#     # blocks: [128, 128]
-#     # residual: True
-#     # factor: 2
-#     _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-#     in_channels: ${model.encoder.embed_dims}
+    # dim: ${model.encoder.embed_dims}
+    # blocks: [128, 128]
+    # residual: True
+    # factor: 2
+    # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+    # in_channels: ${model.encoder.embed_dims}
 
-#   outputs:
-#     bev: [0, 1]
-#     ped: [1, 2]
+  outputs:
+    bev: [0, 1]
+    ped: [1, 2]
 
 box_encoder_type: bev
 

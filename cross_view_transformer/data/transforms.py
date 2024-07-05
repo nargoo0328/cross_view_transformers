@@ -573,30 +573,41 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             for j in range(clusters.max()+1):
                 tmp_index = np.where(clusters==j)[0]
                 (x1,y1), (x2,y2) = get_min_max(bev_pts[tmp_index])
+                
+                if self.box_3d:
+                    pts = np.array([[x1,y1,1],[x2,y2,1]]).transpose()
+                    pts = view_inv @ pts
+                    # pts = self._prepare_augmented_boxes(bev_augm.numpy(), pts, inverse=False)
+                    x1, y1, x2, y2 = pts[:2].transpose().reshape(-1)
 
-                pts = np.array([[x1,y1,1],[x2,y2,1]]).transpose()
-                pts = view_inv @ pts
-                # pts = self._prepare_augmented_boxes(bev_augm.numpy(), pts, inverse=False)
-                x1, y1, x2, y2 = pts[:2].transpose().reshape(-1)
                 tmp.append([x1, y1, x2, y2, i])
-            
+
+        dimension = 6 if self.box_3d else 4    
         tmp = np.array(tmp)
         # print(tmp)
         if len(tmp) == 0:
-            return {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0,6)).astype(np.float32)}
+            return {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0,dimension)).astype(np.float32)}
 
-        boxes = np.zeros((len(tmp),6))
+        boxes = np.zeros((len(tmp), dimension))
         labels = tmp[:,4].astype(np.int_)
 
         boxes[:,0] = (tmp[:, 0] + tmp[:,2]) / 2.0
         boxes[:,1] = (tmp[:,1] + tmp[:,3]) / 2.0
-        boxes[:,2] = tmp[:,0] - tmp[:,2]
-        boxes[:,3] = tmp[:,1] - tmp[:,3]
-        boxes[:,2:4] = np.where(boxes[:,2:4] == 0, 1.0, boxes[:,2:4])
-        boxes[:,4:] = z_stats[labels]
+        boxes[:,2] = tmp[:,2] - tmp[:,0]
+        boxes[:,3] = tmp[:,3] - tmp[:,1]
 
-        boxes[:,2:4] = np.log(boxes[:,2:4])
-        boxes[:,5] = np.log(boxes[:,5])
+        if self.box_3d:
+            boxes[:, 2:4] = -boxes[:, 2:4]
+
+        boxes[:,2:4] = np.where(boxes[:,2:4] == 0, 1.0, boxes[:,2:4])
+
+        # normalized
+        if self.box_3d:
+            boxes[:,4:] = z_stats[labels]
+            boxes[:,2:4] = np.log(boxes[:,2:4])
+            boxes[:,5] = np.log(boxes[:,5])
+        else:
+            boxes = boxes / 200.0
         
         return {'labels':labels, 'boxes':boxes.astype(np.float32)}
 

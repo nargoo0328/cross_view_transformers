@@ -140,8 +140,8 @@ class BEVFomerHead(nn.Module):
                                 self.pc_range[2]) + self.pc_range[2])
             else:
                 assert reference.shape[-1] == 2 
-                tmp[..., 0:2] += reference[..., 0:2]
-                tmp[..., 0:2] = tmp[..., 0:2].sigmoid()
+                tmp[..., 0:2] += reference
+                tmp = tmp.sigmoid()
 
             # TODO: check if using sigmoid
             outputs_coord = tmp

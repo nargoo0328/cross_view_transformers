@@ -3,19 +3,19 @@ defaults:
   - override /model: SparseBEVSegDet_Model # BEVSD_model
   - override /data: nuscenes_vehicle
 
-  - override /loss: detection_loss
-  - override /metrics: detection_metrics
+  - override /loss: SegDet_loss
+  - override /metrics: SegDet_metrics
   - override /visualization: nuscenes_objects
 
 visualization:
   box: True
-  bev: False
+  # bev: False
   box_3d: ${data.box_3d}
     
 data:
   num_classes: 15
   box: pseudo
-  bev: False
+  # bev: False
   # orientation: True
   box_3d: False
 
