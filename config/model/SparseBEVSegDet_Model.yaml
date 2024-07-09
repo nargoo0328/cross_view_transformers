@@ -9,7 +9,7 @@ backbone:
   fpn: True
   embed_dims: ${model.encoder.embed_dims}
 
-  freeze_layers: [layer1]
+  # freeze_layers: [layer1]
 
   image_height: ${data.image.h}
   image_width: ${data.image.w}

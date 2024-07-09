@@ -8,7 +8,7 @@ backbone:
   out_indices: [1,2,3,4]
   fpn: True
 
-  freeze_layers: [layer1]
+  # freeze_layers: [layer1]
   embed_dims: ${model.encoder.embed_dims}
 
   image_height: ${data.image.h}
@@ -53,7 +53,7 @@ encoder:
     num_levels: 4
     h: ${data.image.h}
     w: ${data.image.w}
-    num_points: 8
+    num_points: 16
 
 head:
   _target_: cross_view_transformer.model.decoder.SegHead

@@ -958,8 +958,7 @@ class SegHead(nn.Module):
                             ).flip(0).view(1, 1, W).expand(num_points_in_pillar, H, W) / W
         ys = torch.linspace(0.5, H - 0.5, H
                             ).flip(0).view(1, H, 1).expand(num_points_in_pillar, H, W) / H
-        ref_3d = torch.stack((xs, ys, zs), -1)
-        ref_3d = ref_3d.permute(0, 3, 1, 2).flatten(2).permute(0, 2, 1)
+        ref_3d = torch.stack((ys, xs, zs), -1)
         self.register_buffer('grid', ref_3d, persistent=False) # z h w 3
 
         self.h = H
@@ -969,7 +968,11 @@ class SegHead(nn.Module):
     def forward(self, mlvl_feats, lidar2img):
         
         bs = lidar2img.shape[0]
-        bev_query = repeat(self.bev_query.weight, '... -> b ...', b=bs)
+
+        bev_query = rearrange(self.bev_query.weight, '(h w) d -> d h w', h=self.h, w=self.w)
+        bev_query = repeat(bev_query, '... -> b ...', b=bs)
+
+        # bev_pos = rearrange(self.grid, 'z h w d -> d h w', h=self.h, w=self.w)
         bev_pos = repeat(self.grid, '... -> b ...', b=bs)
         
         bev = self.transformer(
@@ -979,7 +982,7 @@ class SegHead(nn.Module):
             bev_pos, 
         )
 
-        bev = rearrange(bev, 'b (h w) d -> b d h w', h=self.h, w=self.w)
+        # bev = rearrange(bev, 'b (h w) d -> b d h w', h=self.h, w=self.w)
         return bev
     
 class SegTransformerDecoder(nn.Module):
@@ -1048,22 +1051,35 @@ class SegTransformerDecoderLayer(nn.Module):
         self.pc_range = pc_range
 
         self.position_encoder = PositionalEncodingMap(in_c=2, out_c=embed_dims, mid_c=embed_dims * 2)
-        self.compressor = MLP(num_points * embed_dims, embed_dims * 4, embed_dims, 3, as_conv=True)
+        # self.compressor = MLP(num_points * embed_dims, embed_dims * 4, embed_dims, 3, as_conv=True)
 
         self.in_conv = nn.Sequential(
-            Rearrange('b (h w) d -> b d h w', h=200, w=200),
             nn.Conv2d(embed_dims, embed_dims, 1),
             nn.GELU(),
-            nn.Conv2d(embed_dims, embed_dims, 5, padding=2),
-            Rearrange('b d h w -> b (h w) d'),
+            nn.Conv2d(embed_dims, embed_dims, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(embed_dims, embed_dims, 1),
         )
-        
+        self.mid_conv = nn.Sequential(
+            nn.Conv2d(num_points * embed_dims, embed_dims * 2, 1),
+            nn.GELU(),
+            nn.Conv2d(embed_dims * 2, embed_dims, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(embed_dims, embed_dims, 1),
+        )
+        self.out_conv = nn.Sequential(
+            nn.Conv2d(embed_dims, embed_dims, 1),
+            nn.GELU(),
+            nn.Conv2d(embed_dims, embed_dims, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(embed_dims, embed_dims, 1),
+        )
         self.sampling = SegSampling(embed_dims, num_groups=num_groups, num_points=num_points, num_levels=num_levels, pc_range=pc_range, h=h, w=w)
-        self.ffn = MLP_sparse(embed_dims, embed_dims, embed_dims, 2)
+        # self.ffn = MLP_sparse(embed_dims, embed_dims, embed_dims, 2)
 
-        self.norm1 = nn.LayerNorm(embed_dims)
-        self.norm2 = nn.LayerNorm(embed_dims)
-        self.norm3 = nn.LayerNorm(embed_dims)
+        self.norm1 = nn.InstanceNorm2d(embed_dims)
+        self.norm2 = nn.InstanceNorm2d(embed_dims)
+        self.norm3 = nn.InstanceNorm2d(embed_dims)
         
         self.init_weights()
 
@@ -1080,8 +1096,11 @@ class SegTransformerDecoderLayer(nn.Module):
             bev_pos: b z (h w) 3
             bev_query: b (h w) d
         """
+        h, w = bev_query.shape[2:]
 
-        bev_pos_embed = self.position_encoder(bev_pos[:, 0, :, :2])
+        bev_pos_embed = rearrange(bev_pos[:, 0, ..., :2], 'b h w d -> b (h w) d')
+        bev_pos_embed = self.position_encoder(bev_pos_embed) # b h w d
+        bev_pos_embed = rearrange(bev_pos_embed, 'b (h w) d -> b d h w', h=h, w=w)
         bev_query_embed = bev_query + bev_pos_embed
         bev_query = bev_query + self.in_conv(bev_query_embed)
         bev_query = self.norm1(bev_query)
@@ -1093,11 +1112,12 @@ class SegTransformerDecoderLayer(nn.Module):
             lidar2img
         )
 
-        sampled_feat = rearrange(sampled_feat, 'b q g p c -> b (p g c) q 1')
-        sampled_feat = self.compressor(sampled_feat).squeeze(-1) # b d (q1+q2)
-        bev_query = bev_query + rearrange(sampled_feat, 'b d q -> b q d')
+        # sampled_feat = rearrange(sampled_feat, 'b q g p c -> b (p g c) q 1')
+        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w)
+        sampled_feat = self.mid_conv(sampled_feat) #.squeeze(-1) # b d (q1+q2)
+        bev_query = bev_query + sampled_feat # rearrange(sampled_feat, 'b d q -> b q d')
         bev_query = self.norm2(bev_query)
-        bev_query = bev_query + self.ffn(bev_query)
+        bev_query = bev_query + self.out_conv(bev_query)
         bev_query = self.norm3(bev_query)
 
         return bev_query
@@ -1114,8 +1134,10 @@ class SegSampling(nn.Module):
         self.img_w = w
         self.pc_range = pc_range
 
-        self.sampling_offset = nn.Linear(embed_dims, num_groups * num_points * 3)
-        self.scale_weights = nn.Linear(embed_dims, num_groups * num_points * num_levels) if num_levels!= 1 else None
+        # self.sampling_offset = nn.Linear(embed_dims, num_groups * num_points * 3)
+        # self.scale_weights = nn.Linear(embed_dims, num_groups * num_points * num_levels) if num_levels!= 1 else None
+        self.sampling_offset = nn.Conv2d(embed_dims, num_groups * num_points * 3, 1)
+        self.scale_weights = nn.Conv2d(embed_dims, num_groups * num_points * num_levels, 1) if num_levels!= 1 else None
 
     def init_weights(self):
         bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
@@ -1125,26 +1147,29 @@ class SegSampling(nn.Module):
     def forward(self, query, mlvl_feats, reference_points, lidar2img):
 
         num_points_pillar = reference_points.shape[1]
+        
         # sampling offset 
-        sampling_offset = self.sampling_offset(query) # b q (g p 3)
-        sampling_offset = rearrange(sampling_offset, 'b q (g p1 p2 d) -> b q g p1 p2 d',
+        sampling_offset = self.sampling_offset(query).sigmoid() # b (g p 3) h w
+        sampling_offset = sampling_offset - 0.5
+        sampling_offset = rearrange(sampling_offset, 'b (g p1 p2 d) h w -> b (h w) g p1 p2 d',
                             g=self.num_groups,
                             p1=num_points_pillar,
                             p2=self.num_points // num_points_pillar,
                             d=3
                         )
 
-        reference_points = rearrange(reference_points, 'b p1 q d -> b q 1 p1 1 d', d=3).clone()
-        reference_points = reference_points + sampling_offset 
-        reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
+        reference_points = rearrange(reference_points, 'b p1 h w d -> b (h w) 1 p1 1 d', d=3).clone()
 
         reference_points[..., 0:1] = (reference_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
         reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
         reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
 
+        reference_points = reference_points + sampling_offset
+        reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
+
         if self.scale_weights is not None:
             # scale weights
-            scale_weights = rearrange(self.scale_weights(query), 'b q (g p l) -> b q g 1 p l', p=self.num_points, g=self.num_groups, l=self.num_levels) # b q g 1 p l
+            scale_weights = rearrange(self.scale_weights(query), 'b (g p l) h w -> b (h w) g 1 p l', p=self.num_points, g=self.num_groups, l=self.num_levels) # b q g 1 p l
             scale_weights = scale_weights.softmax(-1) 
         else:
             # no scale     
@@ -1158,5 +1183,47 @@ class SegSampling(nn.Module):
             lidar2img,
             self.img_h, self.img_w
         )  # [B, Q, G, P, C]
-        
+
         return sampled_feats
+    
+    # def forward(self, query, mlvl_feats, reference_points, lidar2img):
+
+    #     num_points_pillar = reference_points.shape[1]
+        
+    #     # sampling offset 
+    #     sampling_offset = self.sampling_offset(query).sigmoid() # b q (g p 3)
+    #     sampling_offset = sampling_offset - 0.5
+    #     sampling_offset = rearrange(sampling_offset, 'b q (g p1 p2 d) -> b q g p1 p2 d',
+    #                         g=self.num_groups,
+    #                         p1=num_points_pillar,
+    #                         p2=self.num_points // num_points_pillar,
+    #                         d=3
+    #                     )
+
+    #     reference_points = rearrange(reference_points, 'b p1 q d -> b q 1 p1 1 d', d=3).clone()
+
+    #     reference_points[..., 0:1] = (reference_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
+    #     reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
+    #     reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
+
+    #     reference_points = reference_points + sampling_offset
+    #     reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
+
+    #     if self.scale_weights is not None:
+    #         # scale weights
+    #         scale_weights = rearrange(self.scale_weights(query), 'b q (g p l) -> b q g 1 p l', p=self.num_points, g=self.num_groups, l=self.num_levels) # b q g 1 p l
+    #         scale_weights = scale_weights.softmax(-1) 
+    #     else:
+    #         # no scale     
+    #         scale_weights = None  
+
+    #     # sampling
+    #     sampled_feats = sampling_4d(
+    #         reference_points,
+    #         mlvl_feats,
+    #         scale_weights,
+    #         lidar2img,
+    #         self.img_h, self.img_w
+    #     )  # [B, Q, G, P, C]
+        
+    #     return sampled_feats

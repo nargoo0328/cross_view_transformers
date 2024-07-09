@@ -515,7 +515,7 @@ class PositionalEncodingMap(nn.Module):
         else:
             self.layer = nn.Identity()
 
-    def forward(self, v, normalized=True):
+    def forward(self, v, normalized=False):
         if not normalized:
             v = 2 * v - 1
         return self.layer(positional_encoding(v, self.bvals, self.avals))
