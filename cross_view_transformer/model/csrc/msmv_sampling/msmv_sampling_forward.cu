@@ -18,7 +18,7 @@
       i += blockDim.x * gridDim.x)
 
 #define CUDA_NUM_THREADS 512
-#define MAX_POINT 32
+#define MAX_POINT 128
 
 inline int GET_BLOCKS(const int N, const int num_threads) {
     return (N + num_threads - 1) / num_threads;
@@ -71,6 +71,195 @@ __device__ float ms_deform_attn_im2col_bilinear(
 
     return val;
 }
+
+///
+__global__ void ms_deformable_im2col_gpu_kernel_c2(
+    const float* feat_c2,
+    const int h_c2, const int w_c2,
+    const float* data_sampling_loc,
+    const float* data_attn_weight,
+    const int batch_size,
+    const int channels,
+    const int num_views,
+    const int num_query,
+    const int num_point,
+    float* data_col) {
+
+    float res[MAX_POINT];
+
+    CUDA_KERNEL_LOOP(index, batch_size * num_query * channels) {
+        int _temp = index;
+        const int c_col = _temp % channels;
+        _temp /= channels;
+        const int sampling_index = _temp;
+        _temp /= num_query;
+        const int b_col = _temp;
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            res[p_col] = 0;
+        }
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            int data_loc_ptr = sampling_index * num_point * 3 + p_col * 3;
+            const float loc_w = data_sampling_loc[data_loc_ptr];
+            const float loc_h = data_sampling_loc[data_loc_ptr + 1];
+            const int loc_v = round(data_sampling_loc[data_loc_ptr + 2] * (num_views - 1));
+
+            int data_weight_ptr = sampling_index * num_point * 1 + p_col * 1;
+            const float weight_c2 = data_attn_weight[data_weight_ptr];
+
+            float h_im = loc_h * (h_c2 - 1);
+            float w_im = loc_w * (w_c2 - 1);
+
+            if (h_im > -1 && w_im > -1 && h_im < h_c2 && w_im < w_c2) {
+                const float* feat_c2_ptr = feat_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
+                res[p_col] += ms_deform_attn_im2col_bilinear(feat_c2_ptr, h_c2, w_c2, channels, h_im, w_im, c_col) * weight_c2;
+            }
+        }
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            float* data_col_ptr = data_col + index * num_point + p_col;
+            *data_col_ptr = res[p_col];
+        }
+    }
+}
+
+__global__ void ms_deformable_im2col_gpu_kernel_c23(
+    const float* feat_c2,
+    const float* feat_c3,
+    const int h_c2, const int w_c2,
+    const int h_c3, const int w_c3,
+    const float* data_sampling_loc,
+    const float* data_attn_weight,
+    const int batch_size,
+    const int channels,
+    const int num_views,
+    const int num_query,
+    const int num_point,
+    float* data_col) {
+
+    float res[MAX_POINT];
+
+    CUDA_KERNEL_LOOP(index, batch_size * num_query * channels) {
+        int _temp = index;
+        const int c_col = _temp % channels;
+        _temp /= channels;
+        const int sampling_index = _temp;
+        _temp /= num_query;
+        const int b_col = _temp;
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            res[p_col] = 0;
+        }
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            int data_loc_ptr = sampling_index * num_point * 3 + p_col * 3;
+            const float loc_w = data_sampling_loc[data_loc_ptr];
+            const float loc_h = data_sampling_loc[data_loc_ptr + 1];
+            const int loc_v = round(data_sampling_loc[data_loc_ptr + 2] * (num_views - 1));
+
+            int data_weight_ptr = sampling_index * num_point * 2 + p_col * 2;
+            const float weight_c2 = data_attn_weight[data_weight_ptr];
+            const float weight_c3 = data_attn_weight[data_weight_ptr + 1];
+
+            float h_im = loc_h * (h_c2 - 1);
+            float w_im = loc_w * (w_c2 - 1);
+
+            if (h_im > -1 && w_im > -1 && h_im < h_c2 && w_im < w_c2) {
+                const float* feat_c2_ptr = feat_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
+                res[p_col] += ms_deform_attn_im2col_bilinear(feat_c2_ptr, h_c2, w_c2, channels, h_im, w_im, c_col) * weight_c2;
+            }
+
+            h_im = loc_h * (h_c3 - 1);
+            w_im = loc_w * (w_c3 - 1);
+
+            if (h_im > -1 && w_im > -1 && h_im < h_c3 && w_im < w_c3) {
+                const float* feat_c3_ptr = feat_c3 + b_col * num_views * h_c3 * w_c3 * channels + loc_v * h_c3 * w_c3 * channels;
+                res[p_col] += ms_deform_attn_im2col_bilinear(feat_c3_ptr, h_c3, w_c3, channels, h_im, w_im, c_col) * weight_c3;
+            }
+        }
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            float* data_col_ptr = data_col + index * num_point + p_col;
+            *data_col_ptr = res[p_col];
+        }
+    }
+}
+
+__global__ void ms_deformable_im2col_gpu_kernel_c234(
+    const float* feat_c2,
+    const float* feat_c3,
+    const float* feat_c4,
+    const int h_c2, const int w_c2,
+    const int h_c3, const int w_c3,
+    const int h_c4, const int w_c4,
+    const float* data_sampling_loc,
+    const float* data_attn_weight,
+    const int batch_size,
+    const int channels,
+    const int num_views,
+    const int num_query,
+    const int num_point,
+    float* data_col) {
+
+    float res[MAX_POINT];
+
+    CUDA_KERNEL_LOOP(index, batch_size * num_query * channels) {
+        int _temp = index;
+        const int c_col = _temp % channels;
+        _temp /= channels;
+        const int sampling_index = _temp;
+        _temp /= num_query;
+        const int b_col = _temp;
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            res[p_col] = 0;
+        }
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            int data_loc_ptr = sampling_index * num_point * 3 + p_col * 3;
+            const float loc_w = data_sampling_loc[data_loc_ptr];
+            const float loc_h = data_sampling_loc[data_loc_ptr + 1];
+            const int loc_v = round(data_sampling_loc[data_loc_ptr + 2] * (num_views - 1));
+
+            int data_weight_ptr = sampling_index * num_point * 3 + p_col * 3;
+            const float weight_c2 = data_attn_weight[data_weight_ptr];
+            const float weight_c3 = data_attn_weight[data_weight_ptr + 1];
+            const float weight_c4 = data_attn_weight[data_weight_ptr + 2];
+
+            float h_im = loc_h * (h_c2 - 1);
+            float w_im = loc_w * (w_c2 - 1);
+
+            if (h_im > -1 && w_im > -1 && h_im < h_c2 && w_im < w_c2) {
+                const float* feat_c2_ptr = feat_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
+                res[p_col] += ms_deform_attn_im2col_bilinear(feat_c2_ptr, h_c2, w_c2, channels, h_im, w_im, c_col) * weight_c2;
+            }
+
+            h_im = loc_h * (h_c3 - 1);
+            w_im = loc_w * (w_c3 - 1);
+
+            if (h_im > -1 && w_im > -1 && h_im < h_c3 && w_im < w_c3) {
+                const float* feat_c3_ptr = feat_c3 + b_col * num_views * h_c3 * w_c3 * channels + loc_v * h_c3 * w_c3 * channels;
+                res[p_col] += ms_deform_attn_im2col_bilinear(feat_c3_ptr, h_c3, w_c3, channels, h_im, w_im, c_col) * weight_c3;
+            }
+
+            h_im = loc_h * (h_c4 - 1);
+            w_im = loc_w * (w_c4 - 1);
+
+            if (h_im > -1 && w_im > -1 && h_im < h_c4 && w_im < w_c4) {
+                const float* feat_c4_ptr = feat_c4 + b_col * num_views * h_c4 * w_c4 * channels + loc_v * h_c4 * w_c4 * channels;
+                res[p_col] += ms_deform_attn_im2col_bilinear(feat_c4_ptr, h_c4, w_c4, channels, h_im, w_im, c_col) * weight_c4;
+            }
+        }
+
+        for (int p_col = 0; p_col < num_point; ++p_col) {
+            float* data_col_ptr = data_col + index * num_point + p_col;
+            *data_col_ptr = res[p_col];
+        }
+    }
+}
+
+///
 
 __global__ void ms_deformable_im2col_gpu_kernel_c2345(
     const float* feat_c2,
@@ -265,7 +454,89 @@ __global__ void ms_deformable_im2col_gpu_kernel_c23456(
         }
     }
 }
+///
+void ms_deformable_im2col_cuda_c2(
+    const float* feat_c2,
+    const int h_c2, const int w_c2,
+    const float* data_sampling_loc,
+    const float* data_attn_weight,
+    const int batch_size,
+    const int channels,
+    const int num_views,
+    const int num_query,
+    const int num_point,
+    float* data_col) {
 
+    const int num_kernels = batch_size * num_query * channels;
+    const int num_threads = CUDA_NUM_THREADS;
+
+    ms_deformable_im2col_gpu_kernel_c2 <<<GET_BLOCKS(num_kernels, num_threads), num_threads>>> (
+        feat_c2, h_c2, w_c2, data_sampling_loc, data_attn_weight, batch_size, channels, num_views, num_query, num_point, data_col
+    );
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("error in ms_deformable_im2col_cuda_c2: %s\n", cudaGetErrorString(err));
+    }
+}
+
+void ms_deformable_im2col_cuda_c23(
+    const float* feat_c2,
+    const float* feat_c3,
+    const int h_c2, const int w_c2,
+    const int h_c3, const int w_c3,
+    const float* data_sampling_loc,
+    const float* data_attn_weight,
+    const int batch_size,
+    const int channels,
+    const int num_views,
+    const int num_query,
+    const int num_point,
+    float* data_col) {
+
+    const int num_kernels = batch_size * num_query * channels;
+    const int num_threads = CUDA_NUM_THREADS;
+
+    ms_deformable_im2col_gpu_kernel_c23 <<<GET_BLOCKS(num_kernels, num_threads), num_threads>>> (
+        feat_c2, feat_c3, h_c2, w_c2, h_c3, w_c3, data_sampling_loc, data_attn_weight, batch_size, channels, num_views, num_query, num_point, data_col
+    );
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("error in ms_deformable_im2col_cuda_c23: %s\n", cudaGetErrorString(err));
+    }
+}
+
+void ms_deformable_im2col_cuda_c234(
+    const float* feat_c2,
+    const float* feat_c3,
+    const float* feat_c4,
+    const int h_c2, const int w_c2,
+    const int h_c3, const int w_c3,
+    const int h_c4, const int w_c4,
+    const float* data_sampling_loc,
+    const float* data_attn_weight,
+    const int batch_size,
+    const int channels,
+    const int num_views,
+    const int num_query,
+    const int num_point,
+    float* data_col) {
+
+    const int num_kernels = batch_size * num_query * channels;
+    const int num_threads = CUDA_NUM_THREADS;
+
+    ms_deformable_im2col_gpu_kernel_c234 <<<GET_BLOCKS(num_kernels, num_threads), num_threads>>> (
+        feat_c2, feat_c3, feat_c4, h_c2, w_c2, h_c3, w_c3, h_c4, w_c4, data_sampling_loc, data_attn_weight, batch_size, channels, num_views, num_query, num_point, data_col
+    );
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("error in ms_deformable_im2col_cuda_c234: %s\n", cudaGetErrorString(err));
+    }
+}
+
+///
 void ms_deformable_im2col_cuda_c2345(
     const float* feat_c2,
     const float* feat_c3,

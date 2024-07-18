@@ -3,13 +3,13 @@ defaults:
   - override /model: SparseBEVSegDet_Model_3 # BEVSD_model
   - override /data: nuscenes_vehicle
 
-  - override /loss: objects_loss
-  - override /metrics: objects_metrics
+  - override /loss: vehicle_loss
+  - override /metrics: vehicle_metrics
   - override /visualization: nuscenes_objects
 
-# visualization:
-#   box: True
-#   bev: False
+visualization:
+  bev: True
+  key: ['bev']
     
 data:
   num_classes: 15

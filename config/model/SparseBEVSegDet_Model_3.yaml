@@ -1,10 +1,10 @@
-_target_: cross_view_transformer.model.sparsebev_seg.DetSeg
+_target_: cross_view_transformer.model.sparsebev_seg.SparseBEVSeg
 
 backbone:
   # _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
   _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
 
-  model_name: resnet50
+  model_name: efficientnet_b4 # resnet50
   out_indices: [1,2,3,4]
   fpn: True
 
@@ -32,23 +32,18 @@ backbone:
 #   list_output: True
 
 encoder:
-  _target_: cross_view_transformer.model.sparsebev_seg.DetSegHead
+  _target_: cross_view_transformer.model.sparsebev_seg.SegHead
 
   embed_dims: 128
-  _bev: True
-  _box: False
 
   # bev
   H: 200
   W: 200
-
-  # box
-  num_query: 400
-  num_classes: 8
-  num_reg_fcs: 2
+  Z: 8
+  num_points_in_pillar: 8
 
   transformer:
-    _target_: cross_view_transformer.model.sparsebev_seg.DetSegTransformerDecoder
+    _target_: cross_view_transformer.model.sparsebev_seg.SegTransformerDecoder
     
     num_layers: 1
     num_groups: 1
@@ -59,15 +54,10 @@ encoder:
     h: ${data.image.h}
     w: ${data.image.w}
     num_points: 8
-    bev_only: True
 
-# decoder:
-#   _target_: cross_view_transformer.model.decoder.BEVDecoder
-
-#   dim: ${model.encoder.embed_dims}
-#   blocks: [256, 128]
-#   residual: True
-#   factor: 2
+decoder:
+  _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+  in_channels: 128
 
 head:
   _target_: cross_view_transformer.model.decoder.SegHead
@@ -75,7 +65,7 @@ head:
   dim_last: 128
   multi_head: True
 
-  decoder:
+  # decoder:
     # _target_: cross_view_transformer.model.decoder.BEVDecoder
 
     # dim: ${model.encoder.embed_dims}
@@ -83,9 +73,10 @@ head:
     # residual: True
     # factor: 2
 
-    _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-    in_channels: 128
+    # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+    # in_channels: 128
 
   outputs:
     bev: [0, 1]
-    ped: [1, 2]
+    offset: [1, 3]
+    center: [3, 4]

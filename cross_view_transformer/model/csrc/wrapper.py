@@ -23,7 +23,7 @@ def msmv_sampling_pytorch(mlvl_feats, sampling_locations, scale_weights):
     _, Q, P, _ = sampling_locations.shape
 
     sampling_locations = sampling_locations * 2 - 1
-    sampling_locations = sampling_locations[:, :, :, None, :]  # [B, Q, P, 1, 3]
+    sampling_locations = sampling_locations[:, :, :, None, :]  # [B, Q, P, G, 3]
     final = torch.zeros([B, C, Q, P], device=mlvl_feats[0].device)
 
     for lvl, feat in enumerate(mlvl_feats):
@@ -34,7 +34,7 @@ def msmv_sampling_pytorch(mlvl_feats, sampling_locations, scale_weights):
         out = out * scale_weights[..., lvl].reshape(B, 1, Q, P)
         final += out
     
-    mlvl_feats = [f.permute(0, 2, 3, 4, 1) for f in mlvl_feats]
+    # mlvl_feats = [f.permute(0, 2, 3, 4, 1) for f in mlvl_feats]
     return final.permute(0, 2, 1, 3)
 
 

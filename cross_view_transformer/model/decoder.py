@@ -253,7 +253,7 @@ class SegHead(nn.Module):
                 layer_dict[k] = nn.Sequential(
                 nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
                 nn.InstanceNorm2d(dim_last),
-                nn.ReLU(inplace=True),
+                nn.GELU(),
                 nn.Conv2d(dim_last, stop-start, 1)
             )
             self.to_logits = nn.ModuleDict(layer_dict)
@@ -261,7 +261,7 @@ class SegHead(nn.Module):
             self.to_logits = nn.Sequential(
                 nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
                 nn.InstanceNorm2d(dim_last),
-                nn.ReLU(inplace=True),
+                nn.GELU(),
                 nn.Conv2d(dim_last, dim_max, 1)
             )
 

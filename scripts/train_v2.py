@@ -5,13 +5,14 @@ import pytorch_lightning as pl
 import hydra
 
 from pytorch_lightning.strategies.ddp import DDPStrategy
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, ModelSummary
 
 from cross_view_transformer.common import setup_config, setup_experiment, load_backbone
 from cross_view_transformer.callbacks.gitdiff_callback import GitDiffCallback
 from cross_view_transformer.callbacks.visualization_callback import VisualizationCallback
 import os
 import torch
+from omegaconf import OmegaConf
 
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 log = logging.getLogger(__name__)
@@ -52,15 +53,17 @@ def main(cfg):
     # Loggers and callbacks
     logger = pl.loggers.WandbLogger(project=cfg.experiment.project,
                                     save_dir=cfg.experiment.save_dir,
-                                    id=cfg.experiment.uuid)
+                                    id=cfg.experiment.uuid,
+                                    resume="never",)
     callbacks = [
+        ModelSummary(max_depth=2),
         LearningRateMonitor(logging_interval='epoch'),
         ModelCheckpoint(
             filename='last',
             # monitor ='val/metrics/map_50',
             monitor ='val/metrics/iou_vehicle_@0.40',
             # monitor ='train/metrics/iou_vehicle_@0.60',
-            # monitor = 'train/metrics/@0.60',
+            # monitor = 'val/metrics/@0.40',
             mode='max',
         ),
 
@@ -74,6 +77,10 @@ def main(cfg):
                          strategy=DDPStrategy(),# (find_unused_parameters=False),
                         #  detect_anomaly=True,
                          **cfg.trainer)
+    if trainer.global_rank == 0:
+        cfg = OmegaConf.to_container(cfg, resolve=True)
+        logger.experiment.config.update(cfg)
+        
     # model_module = torch.compile(model_module)
     # model_module.backbone = torch.compile(model_module)
     trainer.fit(model_module, datamodule=data_module, ckpt_path=ckpt_path)

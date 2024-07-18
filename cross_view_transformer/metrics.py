@@ -125,6 +125,7 @@ class IoUMetric(BaseIoUMetric):
             label = label[mask]                                                             # m
         else:
             pred = pred.reshape(-1)
+            
         return super().update(pred, label)
 
 class BoxMAPMetric(MeanAveragePrecision):

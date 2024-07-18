@@ -1,38 +1,37 @@
 _target_: cross_view_transformer.model.sparsebev_seg.SparseBEVSeg
 
 backbone:
-  # _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
-  _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
+  # _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
 
-  model_name: resnet50 # efficientnet_b4
-  out_indices: [1,2,3,4]
-  fpn: True
-  embed_dims: ${model.encoder.embed_dims}
+  # model_name: efficientnet_b4 # efficientnet_b4
+  # out_indices: [1,2,3,4]
+  # fpn: True
+  # embed_dims: ${model.encoder.embed_dims}
 
   # freeze_layers: [layer1]
-
+  _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
   image_height: ${data.image.h}
   image_width: ${data.image.w}
 
-# neck:
-#   _target_: cross_view_transformer.model.backbones.agp.AGPNeck
+neck:
+  _target_: cross_view_transformer.model.backbones.agp.AGPNeck
 
-#   align_res_layer:
-#     _target_: cross_view_transformer.model.backbones.agp.AlignRes
-#     mode: "upsample"
-#     scale_factors: [1, 2]
+  align_res_layer:
+    _target_: cross_view_transformer.model.backbones.agp.AlignRes
+    mode: "upsample"
+    scale_factors: [1, 2]
 
-#   prepare_c_layer:
-#     _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
+  prepare_c_layer:
+    _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
 
-#     in_channels: [56, 160]
-#     mode: "doubleconv"
-#     tail_mode: "conv2d"
+    in_channels: [56, 160]
+    mode: "doubleconv"
+    tail_mode: "conv2d"
   
-#   list_output: True
+  list_output: True
 
 encoder:
-  _target_: cross_view_transformer.model.sparsebev_seg.SparseHead
+  _target_: cross_view_transformer.model.sparsebev_seg.SparseHead # SparseHead SegHead
 
   embed_dims: 128
 
@@ -58,6 +57,18 @@ encoder:
     num_groups: 1
     scale: 1.0
 
+    # _target_: cross_view_transformer.model.sparsebev_seg.SegTransformerDecoder
+    
+    # num_layers: 2
+    # num_groups: 1
+    # pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+
+    # embed_dims: ${model.encoder.embed_dims}
+    # num_levels: 4
+    # h: ${data.image.h}
+    # w: ${data.image.w}
+    # num_points: 16
+
 decoder:
   _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
   in_channels: 128
@@ -81,6 +92,8 @@ head:
     bev: [0, 1]
     ped: [1, 2]
 
+fusion: True
+
 box_encoder_type: bev
 
 box_encoder:
@@ -90,13 +103,13 @@ box_encoder:
   transformer:
     _target_: cross_view_transformer.model.detr.BEVFormer.DetectionTransformerDecoder
 
-    n_layer: 4
+    n_layer: 6
     embed_dims: ${model.encoder.embed_dims}
     nheads: 4
 
   embed_dims: ${model.encoder.embed_dims}
   num_classes: 8
-  num_query: 400
+  num_query: 900
   num_reg_fcs: 2
   pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
   box_3d: ${data.box_3d}

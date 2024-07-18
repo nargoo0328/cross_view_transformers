@@ -10,7 +10,9 @@ class ModelModule(pl.LightningModule):
 
         self.save_hyperparameters(
             cfg,
-            ignore=['loss_func', 'metrics', 'scheduler_args','nusc_metric','val_only'])
+            ignore=['loss_func', 'metrics', 'scheduler_args','nusc_metric','val_only'],
+            logger=False,
+        )
 
         self.backbone = backbone
         self.loss_func = loss_func

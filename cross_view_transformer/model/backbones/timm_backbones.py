@@ -64,8 +64,7 @@ class TimmBackbone(nn.Module):
         self.fpn = None
         if fpn:
             channels = [shape[1] for shape in output_shapes]
-            in_channels = [channels[i-1] for i in out_indices]
-            self.fpn = torchvision.ops.FeaturePyramidNetwork(in_channels, embed_dims)
+            self.fpn = torchvision.ops.FeaturePyramidNetwork(channels, embed_dims)
             output_shapes = [x.shape for x in self(dummy)]
             
         self.output_shapes = output_shapes

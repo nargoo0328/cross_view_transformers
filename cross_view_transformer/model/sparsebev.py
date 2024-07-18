@@ -1156,34 +1156,6 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
         & (sample_points_cam[..., 0:1] < 1.0)
     ).squeeze(-1).float()  # [B, T, N, Q, GP]
 
-    # check if out of image
-    # valid_mask = ((homo > eps) \
-    #     & (sample_points_cam[..., 1:2] > 0.5)
-    #     & (sample_points_cam[..., 1:2] < image_h - 0.5)
-    #     & (sample_points_cam[..., 0:1] > 0.5)
-    #     & (sample_points_cam[..., 0:1] < image_w - 0.5)
-    # ).squeeze(-1).float()  # [B, T, N, Q, GP]
-
-    # # normalize
-    # W = image_w
-    # H = image_h
-    # device = sample_points_cam.device
-    # denom = rearrange(
-    #     torch.tensor([W - 1, H - 1, 2], device=device), "i -> 1 1 i 1", i=3
-    # )
-    # add = rearrange(
-    #     torch.tensor([(1 - W) / 2, (1 - H) / 2, 0], device=device),
-    #     "i -> 1 1 i 1",
-    #     i=3,
-    # )
-    # sub = rearrange(
-    #     torch.tensor([1 / (W - 1), 1 / (H - 1), 0], device=device),
-    #     "i -> 1 1 i 1",
-    #     i=3,
-    # )
-    # sample_points_cam = 2.0 * ((sample_points_cam + add) / denom) - sub
-    # sample_points_cam = sample_points_cam.clam(-2,2)
-
     valid_mask = valid_mask.permute(0, 1, 3, 4, 2)  # [B, T, Q, GP, N]
     sample_points_cam = sample_points_cam.permute(0, 1, 3, 4, 2, 5)  # [B, T, Q, GP, N, 2]
 

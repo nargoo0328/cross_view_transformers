@@ -33,6 +33,8 @@ class SparseBEVSeg(nn.Module):
             box_encoder=None,
             scale: float = 1.0,
             box_encoder_type='',
+            threshold=0.5,
+            fusion=None,
     ):
         super().__init__()
     
@@ -49,6 +51,11 @@ class SparseBEVSeg(nn.Module):
         self.box_encoder = box_encoder 
         self.box_encoder_type = box_encoder_type
         self.decoder = decoder
+        self.threshold = threshold
+        if fusion:
+            self.fusion = 0.85 # nn.Parameter(torch.zeros((1)))
+        else:
+            self.fusion = fusion
 
     def forward(self, batch):
         b, n, _, _, _ = batch['image'].shape
@@ -68,17 +75,77 @@ class SparseBEVSeg(nn.Module):
         if self.encoder is not None:
             x = self.encoder(features, lidar2img)
             x = self.decoder(x)
-
-        if self.head is not None:
-            pred_bev = self.head(x)
-            output.update(pred_bev)
         
         if self.box_encoder_type == 'bev':
             pred_box = self.box_encoder(x)
 
             output.update(pred_box)
 
+            if self.fusion is not None:
+                masks = self.get_mask(pred_box)
+                masks_features = x * masks
+                alpha = self.fusion #.sigmoid()
+                masks_features = alpha * masks_features + (1 - alpha) * x
+                # print(alpha)
+                # import matplotlib.pyplot as plt
+                # fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(10, 10))
+                # # Generate some data and plot in each subplot
+                # for i in range(4):
+                #     for j in range(4):
+                #         axes[i, j].imshow(masks_features[0,i*4+j].cpu().numpy())
+                #         axes[i, j].set_title(f'channel: {i*4 + j + 1}')
+                # # plt.imshow(masks_features[0,1].cpu().numpy())
+                # plt.tight_layout()
+                # plt.show()
+                x = x + masks_features
+
+        if self.head is not None:
+            pred_bev = self.head(x)
+            output.update(pred_bev)
+
         return output
+
+    def get_mask(self, pred):
+        pred_boxes = pred['pred_boxes'].clone()
+
+        # filter with topk candidates region
+        pred_logits = pred['pred_logits'].clone()
+        scores, _ = pred_logits.softmax(-1)[..., :-1].max(-1)
+        scores, filter_idx = torch.topk(scores, k=300, dim=-1)
+
+        # Expand dimensions for filter_idx for matching with pred_boxes_coords
+        filter_idx_expand = filter_idx.unsqueeze(-1).expand(*filter_idx.shape, pred_boxes.shape[-1])
+        pred_boxes = torch.gather(pred_boxes, 1, filter_idx_expand)
+
+        # project box from lidar to bev
+        b, N = pred_boxes.shape[:2]
+        device = pred_boxes.device
+
+        pred_boxes = pred_boxes * 200
+        pred_boxes_coords = box_cxcywh_to_xyxy(pred_boxes, transform=False)
+
+
+        # pad with box
+        yy, xx = torch.meshgrid(torch.arange(200, device=device), torch.arange(200, device=device))
+
+        # Expand dimensions for xx and yy to match the dimensions of box
+        # xx = xx[None, None, ...]
+        # yy = yy[None, None, ...]
+        xx = repeat(xx, '... -> b 1 ...', b=b)
+        yy = repeat(yy, '... -> b 1 ...', b=b)
+        masks = []
+        for i in range(b):
+            pred_boxes_coords_batch = pred_boxes_coords[i]
+            pred_boxes_coords_batch = pred_boxes_coords_batch[scores[i] > self.threshold]
+            # Check if the coordinates are inside the boxes
+            mask_batch = (xx[i] >= pred_boxes_coords_batch[:, 0, None, None]) & (xx[i] <= pred_boxes_coords_batch[:, 2, None, None]) & \
+                    (yy[i] >= pred_boxes_coords_batch[:, 1, None, None]) & (yy[i] <= pred_boxes_coords_batch[:, 3, None, None]) # N h w
+            
+            # Combine the masks for different boxes using logical OR
+            mask_batch = mask_batch.any(dim=0) # h w
+            masks.append(mask_batch)
+
+        return torch.stack(masks).unsqueeze(1).float()
 
 class SparseHead(nn.Module):
     """
@@ -1185,45 +1252,3 @@ class SegSampling(nn.Module):
         )  # [B, Q, G, P, C]
 
         return sampled_feats
-    
-    # def forward(self, query, mlvl_feats, reference_points, lidar2img):
-
-    #     num_points_pillar = reference_points.shape[1]
-        
-    #     # sampling offset 
-    #     sampling_offset = self.sampling_offset(query).sigmoid() # b q (g p 3)
-    #     sampling_offset = sampling_offset - 0.5
-    #     sampling_offset = rearrange(sampling_offset, 'b q (g p1 p2 d) -> b q g p1 p2 d',
-    #                         g=self.num_groups,
-    #                         p1=num_points_pillar,
-    #                         p2=self.num_points // num_points_pillar,
-    #                         d=3
-    #                     )
-
-    #     reference_points = rearrange(reference_points, 'b p1 q d -> b q 1 p1 1 d', d=3).clone()
-
-    #     reference_points[..., 0:1] = (reference_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
-    #     reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
-    #     reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
-
-    #     reference_points = reference_points + sampling_offset
-    #     reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
-
-    #     if self.scale_weights is not None:
-    #         # scale weights
-    #         scale_weights = rearrange(self.scale_weights(query), 'b q (g p l) -> b q g 1 p l', p=self.num_points, g=self.num_groups, l=self.num_levels) # b q g 1 p l
-    #         scale_weights = scale_weights.softmax(-1) 
-    #     else:
-    #         # no scale     
-    #         scale_weights = None  
-
-    #     # sampling
-    #     sampled_feats = sampling_4d(
-    #         reference_points,
-    #         mlvl_feats,
-    #         scale_weights,
-    #         lidar2img,
-    #         self.img_h, self.img_w
-    #     )  # [B, Q, G, P, C]
-        
-    #     return sampled_feats

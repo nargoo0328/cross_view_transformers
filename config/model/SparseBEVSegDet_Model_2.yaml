@@ -55,13 +55,17 @@ encoder:
     w: ${data.image.w}
     num_points: 16
 
+decoder:
+  _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+  in_channels: 128
+
 head:
   _target_: cross_view_transformer.model.decoder.SegHead
 
   dim_last: 128
   multi_head: True
 
-  decoder:
+  # decoder:
     # _target_: cross_view_transformer.model.decoder.BEVDecoder
 
     # dim: ${model.encoder.embed_dims}
@@ -69,8 +73,8 @@ head:
     # residual: True
     # factor: 2
 
-    _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-    in_channels: 128
+    # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+    # in_channels: 128
 
   outputs:
     bev: [0, 1]
