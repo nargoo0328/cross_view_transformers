@@ -2,6 +2,9 @@ import torch
 import torch.nn.functional as F
 
 try:
+    from ._msmv_sampling_cuda import _ms_deform_attn_cuda_c2_forward, _ms_deform_attn_cuda_c2_backward
+    from ._msmv_sampling_cuda import _ms_deform_attn_cuda_c23_forward, _ms_deform_attn_cuda_c23_backward
+    from ._msmv_sampling_cuda import _ms_deform_attn_cuda_c234_forward, _ms_deform_attn_cuda_c234_backward
     from ._msmv_sampling_cuda import _ms_deform_attn_cuda_c2345_forward, _ms_deform_attn_cuda_c2345_backward
     from ._msmv_sampling_cuda import _ms_deform_attn_cuda_c23456_forward, _ms_deform_attn_cuda_c23456_backward
     MSMV_CUDA = True
@@ -37,6 +40,65 @@ def msmv_sampling_pytorch(mlvl_feats, sampling_locations, scale_weights):
     # mlvl_feats = [f.permute(0, 2, 3, 4, 1) for f in mlvl_feats]
     return final.permute(0, 2, 1, 3)
 
+class MSMVSamplingC2(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, feat_c2, sampling_locations, scale_weights):
+        ctx.save_for_backward(feat_c2, sampling_locations, scale_weights)
+        
+        assert callable(_ms_deform_attn_cuda_c2_forward)
+        return _ms_deform_attn_cuda_c2_forward(
+            feat_c2, sampling_locations, scale_weights)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        feat_c2, sampling_locations, scale_weights = ctx.saved_tensors
+
+        assert callable(_ms_deform_attn_cuda_c2_backward)
+        grad_value_c2, grad_sampling_loc, grad_attn_weight = _ms_deform_attn_cuda_c2_backward(
+            grad_output.contiguous(), feat_c2, sampling_locations, scale_weights
+        )
+        
+        return grad_value_c2, grad_sampling_loc, grad_attn_weight
+
+class MSMVSamplingC23(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, feat_c2, feat_c3, sampling_locations, scale_weights):
+        ctx.save_for_backward(feat_c2, feat_c3, sampling_locations, scale_weights)
+        
+        assert callable(_ms_deform_attn_cuda_c23_forward)
+        return _ms_deform_attn_cuda_c23_forward(
+            feat_c2, feat_c3, sampling_locations, scale_weights)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        feat_c2, feat_c3, sampling_locations, scale_weights = ctx.saved_tensors
+
+        assert callable(_ms_deform_attn_cuda_c23_backward)
+        grad_value_c2, grad_value_c3, grad_sampling_loc, grad_attn_weight = _ms_deform_attn_cuda_c23_backward(
+            grad_output.contiguous(), feat_c2, feat_c3, sampling_locations, scale_weights
+        )
+        
+        return grad_value_c2, grad_value_c3, grad_sampling_loc, grad_attn_weight
+
+class MSMVSamplingC234(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, feat_c2, feat_c3, feat_c4, sampling_locations, scale_weights):
+        ctx.save_for_backward(feat_c2, feat_c3, feat_c4, sampling_locations, scale_weights)
+        
+        assert callable(_ms_deform_attn_cuda_c234_forward)
+        return _ms_deform_attn_cuda_c234_forward(
+            feat_c2, feat_c3, feat_c4, sampling_locations, scale_weights)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        feat_c2, feat_c3, feat_c4, sampling_locations, scale_weights = ctx.saved_tensors
+
+        assert callable(_ms_deform_attn_cuda_c234_backward)
+        grad_value_c2, grad_value_c3, grad_value_c4, grad_sampling_loc, grad_attn_weight = _ms_deform_attn_cuda_c234_backward(
+            grad_output.contiguous(), feat_c2, feat_c3, feat_c4, sampling_locations, scale_weights
+        )
+        
+        return grad_value_c2, grad_value_c3, grad_value_c4, grad_sampling_loc, grad_attn_weight
 
 class MSMVSamplingC2345(torch.autograd.Function):
     @staticmethod
@@ -85,7 +147,14 @@ class MSMVSamplingC23456(torch.autograd.Function):
 
 
 def msmv_sampling(mlvl_feats, sampling_locations, scale_weights):
-    if len(mlvl_feats) == 4 and MSMV_CUDA:
+    
+    if len(mlvl_feats) == 1 and MSMV_CUDA:
+        return MSMVSamplingC2.apply(*mlvl_feats, sampling_locations, scale_weights)
+    elif len(mlvl_feats) == 2 and MSMV_CUDA:
+        return MSMVSamplingC23.apply(*mlvl_feats, sampling_locations, scale_weights)
+    elif len(mlvl_feats) == 3 and MSMV_CUDA:
+        return MSMVSamplingC234.apply(*mlvl_feats, sampling_locations, scale_weights)
+    elif len(mlvl_feats) == 4 and MSMV_CUDA:
         return MSMVSamplingC2345.apply(*mlvl_feats, sampling_locations, scale_weights)
     elif len(mlvl_feats) == 5 and MSMV_CUDA:
         return MSMVSamplingC23456.apply(*mlvl_feats, sampling_locations, scale_weights)

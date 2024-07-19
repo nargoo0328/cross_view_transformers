@@ -19,7 +19,7 @@
          i += blockDim.x * gridDim.x)
 
 #define CUDA_NUM_THREADS 512
-#define MAX_POINT 32
+#define MAX_POINT 128
 
 inline int GET_BLOCKS(const int N, const int num_threads)
 {
@@ -141,7 +141,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c2(
         const int loc_v = round(data_sampling_loc[data_loc_ptr + 2] * (num_views - 1));
 
         // Attn weights
-        int data_weight_ptr = sampling_index * num_point * 4 + p_col * 4;
+        int data_weight_ptr = sampling_index * num_point * 1 + p_col * 1;
 
         const float weight_c2 = data_attn_weight[data_weight_ptr];
 
@@ -155,7 +155,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c2(
         if (h_im > -1 && w_im > -1 && h_im < h_c2 && w_im < w_c2)
         {
             const float *feat_c2_ptr = feat_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
-            float *grad_c2_ptr = grad_value_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
+            const float *grad_c2_ptr = grad_value_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
             ms_deform_attn_col2im_bilinear(feat_c2_ptr, h_c2, w_c2, channels, h_im, w_im, c_col,
                                            top_grad, weight_c2,
                                            grad_c2_ptr, grad_location_ptr, grad_weights_ptr);
@@ -202,7 +202,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c23(
         const int loc_v = round(data_sampling_loc[data_loc_ptr + 2] * (num_views - 1));
 
         // Attn weights
-        int data_weight_ptr = sampling_index * num_point * 4 + p_col * 4;
+        int data_weight_ptr = sampling_index * num_point * 2 + p_col * 2;
 
         const float weight_c2 = data_attn_weight[data_weight_ptr];
         const float weight_c3 = data_attn_weight[data_weight_ptr + 1];
@@ -217,7 +217,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c23(
         if (h_im > -1 && w_im > -1 && h_im < h_c2 && w_im < w_c2)
         {
             const float *feat_c2_ptr = feat_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
-            float *grad_c2_ptr = grad_value_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
+            const float *grad_c2_ptr = grad_value_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
             ms_deform_attn_col2im_bilinear(feat_c2_ptr, h_c2, w_c2, channels, h_im, w_im, c_col,
                                            top_grad, weight_c2,
                                            grad_c2_ptr, grad_location_ptr, grad_weights_ptr);
@@ -232,7 +232,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c23(
         if (h_im > -1 && w_im > -1 && h_im < h_c3 && w_im < w_c3)
         {
             const float *feat_c3_ptr = feat_c3 + b_col * num_views * h_c3 * w_c3 * channels + loc_v * h_c3 * w_c3 * channels;
-            float *grad_c3_ptr = grad_value_c3 + b_col * num_views * h_c3 * w_c3 * channels + loc_v * h_c3 * w_c3 * channels;
+            const float *grad_c3_ptr = grad_value_c3 + b_col * num_views * h_c3 * w_c3 * channels + loc_v * h_c3 * w_c3 * channels;
             ms_deform_attn_col2im_bilinear(feat_c3_ptr, h_c3, w_c3, channels, h_im, w_im, c_col,
                                            top_grad, weight_c3,
                                            grad_c3_ptr, grad_location_ptr, grad_weights_ptr);
@@ -282,7 +282,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c234(
         const int loc_v = round(data_sampling_loc[data_loc_ptr + 2] * (num_views - 1));
 
         // Attn weights
-        int data_weight_ptr = sampling_index * num_point * 4 + p_col * 4;
+        int data_weight_ptr = sampling_index * num_point * 3 + p_col * 3;
 
         const float weight_c2 = data_attn_weight[data_weight_ptr];
         const float weight_c3 = data_attn_weight[data_weight_ptr + 1];
@@ -298,7 +298,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c234(
         if (h_im > -1 && w_im > -1 && h_im < h_c2 && w_im < w_c2)
         {
             const float *feat_c2_ptr = feat_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
-            float *grad_c2_ptr = grad_value_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
+            const float *grad_c2_ptr = grad_value_c2 + b_col * num_views * h_c2 * w_c2 * channels + loc_v * h_c2 * w_c2 * channels;
             ms_deform_attn_col2im_bilinear(feat_c2_ptr, h_c2, w_c2, channels, h_im, w_im, c_col,
                                            top_grad, weight_c2,
                                            grad_c2_ptr, grad_location_ptr, grad_weights_ptr);
@@ -313,7 +313,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c234(
         if (h_im > -1 && w_im > -1 && h_im < h_c3 && w_im < w_c3)
         {
             const float *feat_c3_ptr = feat_c3 + b_col * num_views * h_c3 * w_c3 * channels + loc_v * h_c3 * w_c3 * channels;
-            float *grad_c3_ptr = grad_value_c3 + b_col * num_views * h_c3 * w_c3 * channels + loc_v * h_c3 * w_c3 * channels;
+            const float *grad_c3_ptr = grad_value_c3 + b_col * num_views * h_c3 * w_c3 * channels + loc_v * h_c3 * w_c3 * channels;
             ms_deform_attn_col2im_bilinear(feat_c3_ptr, h_c3, w_c3, channels, h_im, w_im, c_col,
                                            top_grad, weight_c3,
                                            grad_c3_ptr, grad_location_ptr, grad_weights_ptr);
@@ -328,7 +328,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_c234(
         if (h_im > -1 && w_im > -1 && h_im < h_c4 && w_im < w_c4)
         {
             const float *feat_c4_ptr = feat_c4 + b_col * num_views * h_c4 * w_c4 * channels + loc_v * h_c4 * w_c4 * channels;
-            float *grad_c4_ptr = grad_value_c4 + b_col * num_views * h_c4 * w_c4 * channels + loc_v * h_c4 * w_c4 * channels;
+            const float *grad_c4_ptr = grad_value_c4 + b_col * num_views * h_c4 * w_c4 * channels + loc_v * h_c4 * w_c4 * channels;
             ms_deform_attn_col2im_bilinear(feat_c4_ptr, h_c4, w_c4, channels, h_im, w_im, c_col,
                                            top_grad, weight_c4,
                                            grad_c4_ptr, grad_location_ptr, grad_weights_ptr);

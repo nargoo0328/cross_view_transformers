@@ -98,12 +98,12 @@ def calculate_iou(model,network,loader, device, metric_mode):
                         batch[k] = v
 
             pred = network(batch)
-            b = batch['bev'].shape[0]
+
             if metric_mode == 'box_projection':
             # project box 
-                view = batch['view'][0].cpu().numpy()
+                b = batch['bev'].shape[0]
                 render = np.zeros((b,2,200,200),np.float32)
-                pred_box = box_cxcywh_to_xyxy(pred['pred_boxes'][..., :4].detach(),transform=True).cpu().numpy()
+                pred_box = box_cxcywh_to_xyxy(pred['pred_boxes'].detach() * 200, transform=False).cpu().numpy()
                 # pred_box = pred_box * 100 - 50 
                 scores, labels = pred['pred_logits'].softmax(-1)[..., :-1].max(-1)
                 # pred_logits = pred['pred_logits'][0].detach().softmax(1).argmax(1).cpu().numpy() # N, num_classes
@@ -112,15 +112,11 @@ def calculate_iou(model,network,loader, device, metric_mode):
                     for (x1,y1,x2,y2), score, label in zip(pred_box[j], scores[j], labels[j]):
                         if score < score_threshold:
                             continue
-                        pts = np.array([[x1,y1,1],[x2,y2,1]]).transpose()
-                        pts = view @ pts
-                        pts = pts.astype(np.uint8)
-                        x1,y1 = pts[:2,0] 
-                        x2,y2 = pts[:2,1]
                         label = 0 if label != 5 else 1
-                        cv2.rectangle(render[j][label], (x1, y1), (x2, y2), 1, -1)
+                        cv2.rectangle(render[j][label], (int(x1), int(y1)), (int(x2), int(y2)), 1, -1)
                 pred['bev'] = torch.from_numpy(render[:,0:1]).to(device)
                 pred['ped'] = torch.from_numpy(render[:,1:2]).to(device)
+
             if metric_mode == 'iou' or metric_mode == 'box_projection':
                 model.metrics.update(pred,batch)
             elif metric_mode == 'nusc':

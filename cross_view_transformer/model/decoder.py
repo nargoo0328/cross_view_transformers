@@ -230,6 +230,7 @@ class SegHead(nn.Module):
             multi_head, 
             outputs,
             decoder=nn.Identity(),
+            sparse=False,
         ):
         super().__init__()
 
@@ -246,24 +247,45 @@ class SegHead(nn.Module):
             dim_max = max(dim_max, stop)
 
         assert dim_max == dim_total
-        
-        if multi_head:
-            layer_dict = {}
-            for k, (start, stop) in outputs.items():
-                layer_dict[k] = nn.Sequential(
-                nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
-                nn.InstanceNorm2d(dim_last),
-                nn.GELU(),
-                nn.Conv2d(dim_last, stop-start, 1)
-            )
-            self.to_logits = nn.ModuleDict(layer_dict)
+        if sparse:
+            algo = spconv.ConvAlgo.Native
+            if multi_head:
+                layer_dict = {}
+                for k, (start, stop) in outputs.items():
+                    layer_dict[k] = spconv.SparseSequential(
+                        spconv.SubMConv2d(dim_last, dim_last, 3, padding=1, bias=False, algo=algo),
+                        nn.InstanceNorm1d(dim_last, momentum=0.1),
+                        nn.ReLU(inplace=False),
+                        spconv.SubMConv2d(
+                            dim_last, out_channels=stop-start, kernel_size=1, padding=0, algo=algo
+                        )
+                    )
+                self.to_logits = nn.ModuleDict(layer_dict)
+            else:
+                self.to_logits = spconv.SparseSequential(
+                    spconv.SubMConv2d(dim_last, dim_last, 3, padding=1, bias=False, algo=algo),
+                    nn.BatchNorm1d(dim_last, momentum=0.1),
+                    nn.ReLU(inplace=False),
+                    spconv.SubMConv2d(dim_last, dim_max, 1, algo=algo),
+                )
         else:
-            self.to_logits = nn.Sequential(
-                nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
-                nn.InstanceNorm2d(dim_last),
-                nn.GELU(),
-                nn.Conv2d(dim_last, dim_max, 1)
-            )
+            if multi_head:
+                layer_dict = {}
+                for k, (start, stop) in outputs.items():
+                    layer_dict[k] = nn.Sequential(
+                    nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
+                    nn.InstanceNorm2d(dim_last),
+                    nn.GELU(),
+                    nn.Conv2d(dim_last, stop-start, 1)
+                )
+                self.to_logits = nn.ModuleDict(layer_dict)
+            else:
+                self.to_logits = nn.Sequential(
+                    nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
+                    nn.InstanceNorm2d(dim_last),
+                    nn.GELU(),
+                    nn.Conv2d(dim_last, dim_max, 1)
+                )
 
     def forward_head(self, x):
         if self.multi_head:
@@ -272,7 +294,7 @@ class SegHead(nn.Module):
             x = self.to_logits(x)
             return {k: x[:, start:stop] for k, (start, stop) in self.outputs.items()}
         
-    def forward(self, x, return_bev=False):
+    def forward(self, x, return_bev=False, mask=None):
         x = self.decoder(x)
         y = self.forward_head(x)
         if return_bev:

@@ -4,7 +4,7 @@ defaults:
   - override /data: nuscenes_vehicle
 
   - override /loss: SegDet_loss
-  - override /metrics: SegDet_metrics
+  - override /metrics: objects_metrics
   - override /visualization: nuscenes_objects
 
 visualization:
@@ -15,8 +15,6 @@ visualization:
 data:
   num_classes: 15
   box: pseudo
-  # bev: False
-  # orientation: True
   box_3d: False
 
 # model:

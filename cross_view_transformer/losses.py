@@ -137,25 +137,17 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
         alpha=-1.0,
         gamma=2.0,
         key='bev',
-        sparse=False,
     ):
         super().__init__(alpha=alpha, gamma=gamma, reduction='none')
         
         self.label_indices = label_indices
         self.min_visibility = min_visibility
         self.key = key
-        self.sparse = sparse
 
     def forward(self, pred, batch):
-        if isinstance(pred, dict):
-            if f"{self.key}_aux" in pred:
-                pass
-            
-            pred_mask = pred['mask'][:, None] if 'mask' in pred else None
+        if isinstance(pred, dict):            
+            pred_mask = pred['mask'] if 'mask' in pred else None
             pred = pred[self.key]
-        
-        if self.sparse:
-            pred_mask = pred == 0
 
         label = batch['bev']
 
@@ -174,8 +166,9 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
             mask = mask[:, None]
             if pred_mask is not None:
                 mask = mask & pred_mask
-            if self.sparse:
-                mask = mask & pred_mask
+            loss = loss[mask]
+            
+        elif pred_mask is not None:
             loss = loss[mask]
 
         return loss.mean()

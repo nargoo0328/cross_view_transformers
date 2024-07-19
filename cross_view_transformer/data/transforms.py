@@ -207,14 +207,14 @@ class SaveDataTransform:
 
 
 class LoadDataTransform(torchvision.transforms.ToTensor):
-    def __init__(self, dataset_dir, labels_dir, image_config, num_classes, autoencoder=None, lidar=None, box='', orientation=False, augment=False, no_class=False, ida_aug_conf=None, bev_aug_conf=None, training=True, box_3d=True, **kwargs):
+    def __init__(self, dataset_dir, labels_dir, image_config, num_classes, image_data=True, lidar=None, box='', orientation=False, augment=False, no_class=False, ida_aug_conf=None, bev_aug_conf=None, training=True, box_3d=True, **kwargs):
         super().__init__()
 
         self.dataset_dir = pathlib.Path(dataset_dir)
         self.labels_dir = pathlib.Path(labels_dir)
         self.image_config = image_config
         self.num_classes = num_classes
-        self.autoencoder = autoencoder
+        self.image_data = image_data
         self.lidar = lidar
         assert box in ['','gt','pseudo']
         self.box = box
@@ -620,7 +620,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         result['view'] = torch.tensor(batch.view)
         result['5d_view'] = get_5d_view(result['view'])
 
-        if not self.autoencoder:
+        if self.image_data:
             get_cameras = self.get_cameras_augm if self.augment_img is not None else self.get_cameras 
             result.update(get_cameras(batch, **self.image_config))
         

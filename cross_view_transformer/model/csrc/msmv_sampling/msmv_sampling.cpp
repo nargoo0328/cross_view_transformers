@@ -452,8 +452,8 @@ std::vector<at::Tensor> ms_deform_attn_cuda_c2_backward(
     const at::Tensor& grad_output,
     const at::Tensor& feat_c2,  // [B, N, H, W, C]
     const at::Tensor& sampling_loc,  // [B, Q, P, 3]
-    const at::Tensor& attn_weight  // [B, Q, P, 1]
-) {
+    const at::Tensor& attn_weight  // [B, Q, P, 4]
+    ) {
     AT_ASSERTM(feat_c2.is_contiguous(), "value tensor has to be contiguous");
     AT_ASSERTM(sampling_loc.is_contiguous(), "sampling_loc tensor has to be contiguous");
     AT_ASSERTM(attn_weight.is_contiguous(), "attn_weight tensor has to be contiguous");
@@ -767,6 +767,12 @@ std::vector<at::Tensor> ms_deform_attn_cuda_c23456_backward(
 
 #ifdef TORCH_EXTENSION_NAME
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("_ms_deform_attn_cuda_c2_forward", &ms_deform_attn_cuda_c2_forward, "pass");
+    m.def("_ms_deform_attn_cuda_c2_backward", &ms_deform_attn_cuda_c2_backward, "pass");
+    m.def("_ms_deform_attn_cuda_c23_forward", &ms_deform_attn_cuda_c23_forward, "pass");
+    m.def("_ms_deform_attn_cuda_c23_backward", &ms_deform_attn_cuda_c23_backward, "pass");
+    m.def("_ms_deform_attn_cuda_c234_forward", &ms_deform_attn_cuda_c234_forward, "pass");
+    m.def("_ms_deform_attn_cuda_c234_backward", &ms_deform_attn_cuda_c234_backward, "pass");
     m.def("_ms_deform_attn_cuda_c2345_forward", &ms_deform_attn_cuda_c2345_forward, "pass");
     m.def("_ms_deform_attn_cuda_c2345_backward", &ms_deform_attn_cuda_c2345_backward, "pass");
     m.def("_ms_deform_attn_cuda_c23456_forward", &ms_deform_attn_cuda_c23456_forward, "pass");

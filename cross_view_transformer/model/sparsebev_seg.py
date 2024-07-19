@@ -35,6 +35,7 @@ class SparseBEVSeg(nn.Module):
             box_encoder_type='',
             threshold=0.5,
             fusion=None,
+            sparse=False,
     ):
         super().__init__()
     
@@ -56,6 +57,7 @@ class SparseBEVSeg(nn.Module):
             self.fusion = 0.85 # nn.Parameter(torch.zeros((1)))
         else:
             self.fusion = fusion
+        self.sparse = sparse
 
     def forward(self, batch):
         b, n, _, _, _ = batch['image'].shape
@@ -83,24 +85,53 @@ class SparseBEVSeg(nn.Module):
 
             if self.fusion is not None:
                 masks = self.get_mask(pred_box)
-                masks_features = x * masks
-                alpha = self.fusion #.sigmoid()
-                masks_features = alpha * masks_features + (1 - alpha) * x
+                if self.sparse:
+                    N, C, H, W = x.shape
+
+                    # Step 1: Flatten the mask and get the indices of non-zero elements
+                    mask_flat = masks.view(N, -1)
+                    indices = torch.nonzero(mask_flat, as_tuple=False).int()
+                    
+                    # Step 2: Extract the valid features using the indices
+                    valid_features = x.view(N, C, -1).permute(0, 2, 1)[indices[:, 0], indices[:, 1]]
+                    
+                    # Step 3: Create the sparse tensor
+                    # The coordinates should be in the format (batch_index, z, y, x)
+                    coords = torch.cat([indices[:, 0:1], torch.div(indices[:, 1:], W, rounding_mode='floor'), indices[:, 1:] % W], dim=1)
+
+                    # Create the sparse tensor
+                    x = spconv.SparseConvTensor(features=valid_features, indices=coords, spatial_shape=(H, W), batch_size=N)
+                else:
+                    masks_features = x * masks
+                    alpha = self.fusion #.sigmoid()
+                    x = alpha * masks_features + (1 - alpha) * x
                 # print(alpha)
                 # import matplotlib.pyplot as plt
                 # fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(10, 10))
                 # # Generate some data and plot in each subplot
                 # for i in range(4):
                 #     for j in range(4):
-                #         axes[i, j].imshow(masks_features[0,i*4+j].cpu().numpy())
+                #         axes[i, j].imshow(masks_features[0,i*4+j].sigmoid().cpu().numpy())
                 #         axes[i, j].set_title(f'channel: {i*4 + j + 1}')
                 # # plt.imshow(masks_features[0,1].cpu().numpy())
                 # plt.tight_layout()
                 # plt.show()
-                x = x + masks_features
 
         if self.head is not None:
             pred_bev = self.head(x)
+            if self.fusion is not None:
+                pred_bev['pred_mask'] = masks
+                for k in pred_bev:
+                    x = pred_bev[k]
+                    masks_features = x * masks
+                    alpha = self.fusion
+                    x = alpha * masks_features + (1 - alpha) * x
+                    pred_bev[k] = x
+            elif self.sparse:
+                pred_bev['pred_mask'] = masks
+                for k in pred_bev:
+                    if isinstance(pred_bev[k], spconv.SparseConvTensor):
+                        pred_bev[k] = pred_bev[k].dense()
             output.update(pred_bev)
 
         return output
@@ -123,7 +154,6 @@ class SparseBEVSeg(nn.Module):
 
         pred_boxes = pred_boxes * 200
         pred_boxes_coords = box_cxcywh_to_xyxy(pred_boxes, transform=False)
-
 
         # pad with box
         yy, xx = torch.meshgrid(torch.arange(200, device=device), torch.arange(200, device=device))

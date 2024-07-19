@@ -4,7 +4,7 @@ ped:
 
   label_indices: [[9]]
   gamma: 2.0
-  alpha: 0.66
+  alpha: 0.75
   # min_visibility: 2
   key: ped
 
@@ -35,7 +35,7 @@ Set:
   aux_weight: 0.1
   losses: ['labels', 'boxes']
 
-loss_ce_weight: 0.002 # 0.02
-loss_bbox_weight: 0.01 # 0.1
+loss_ce_weight: 0.01 # 0.02
+loss_bbox_weight: 0.05 # 0.1
 # loss_giou_weight: 2.0
 class_error_weight: 0.0
