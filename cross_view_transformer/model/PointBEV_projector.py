@@ -36,7 +36,7 @@ class CamProjector(nn.Module):
         self.X_cam, self.Y_cam, self.Z_cam = Y, Z, X
 
     # Voxel to cams
-    def from_voxel_ref_to_cams(self, vox_coords, lidar2img):
+    def from_voxel_ref_to_cams(self, vox_coords, extrins):
         """Project points from voxel reference to camera reference.
         Args:
             - rots, trans: map points from cameras to ego. In Nuscenes, extrinsics
@@ -48,7 +48,7 @@ class CamProjector(nn.Module):
         """
         # vox_coords = self.from_spatial_to_seqaug(vox_coords, bev_aug, egoTin_to_seq)
         vox_coords = rearrange(vox_coords, "bt i x y z -> bt i (x y z)", i=3)
-        voxcam_coords = self.from_spatial_to_cams(vox_coords, lidar2img)
+        voxcam_coords = self.from_spatial_to_cams(vox_coords, extrins)
         return voxcam_coords, vox_coords
 
     def from_spatial_to_seqaug(self, vox_coords, bev_aug, egoTin_to_seq):
@@ -73,7 +73,7 @@ class CamProjector(nn.Module):
         vox_coords_aug = torch.bmm(bev_aug, torch.bmm(egoTin_to_seq, vox_coords))
         return vox_coords_aug[:, :3]
 
-    def from_spatial_to_cams(self, vox_coords, lidar2img):
+    def from_spatial_to_cams(self, vox_coords, extrins):
         """
         Map points from augmented reference frame to camera reference frame.
 
@@ -85,12 +85,12 @@ class CamProjector(nn.Module):
             - Translation: R2^-1 @ (T1 - T2)
         """
         # Alias
-        bt, n, *_ = lidar2img.shape
-        lidar2img = rearrange(lidar2img, 'b n ... -> (b n) ...')
+        bt, n, *_ = extrins.shape
+        extrins = rearrange(extrins, 'b n ... -> (b n) ...')
         # Apply: camera transformations.
         vox_coords = torch.cat([vox_coords, torch.ones_like(vox_coords[:, :1])], dim=1)
         vox_coords = repeat(vox_coords, "bt i Npts -> (bt n) i Npts", n=n, i=4)
-        voxcam_coords = torch.bmm(lidar2img, vox_coords)[:, :3]
+        voxcam_coords = torch.bmm(extrins, vox_coords)[:, :3]
         return rearrange(voxcam_coords, "(bt n) i Npts -> bt n i Npts", bt=bt, n=n, i=3)
 
     # Cams to pixels
@@ -237,7 +237,7 @@ class CamProjector(nn.Module):
         return list_out
 
     # Forward
-    def forward(self, dict_shape, dict_vox, lidar2img, intrins) -> Dict[str, torch.Tensor]:
+    def forward(self, dict_shape, dict_vox, extrins, intrins) -> Dict[str, torch.Tensor]:
 
         vox_coords = dict_vox.get("vox_coords", None)
         # Alias
@@ -254,7 +254,7 @@ class CamProjector(nn.Module):
             # trans,
             # bev_aug,
             # egoTin_to_seq,
-            lidar2img,
+            extrins,
         )
         z_valid = self.valid_points_in_cam(voxcam_coords)
 

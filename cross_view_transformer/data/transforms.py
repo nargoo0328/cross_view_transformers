@@ -207,7 +207,7 @@ class SaveDataTransform:
 
 
 class LoadDataTransform(torchvision.transforms.ToTensor):
-    def __init__(self, dataset_dir, labels_dir, image_config, num_classes, image_data=True, lidar=None, box='', orientation=False, augment=False, no_class=False, ida_aug_conf=None, bev_aug_conf=None, training=True, box_3d=True, **kwargs):
+    def __init__(self, dataset_dir, labels_dir, image_config, num_classes, image_data=True, lidar=None, box='',split_intrin_extrin=False, orientation=False, augment_img=False, augment_bev=False, no_class=False, ida_aug_conf=None, bev_aug_conf=None, training=True, box_3d=True, **kwargs):
         super().__init__()
 
         self.dataset_dir = pathlib.Path(dataset_dir)
@@ -221,11 +221,12 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         self.orientation = orientation
         self.no_class = no_class
         self.box_3d = box_3d
+        self.split_intrin_extrin = split_intrin_extrin
 
         self.img_transform = torchvision.transforms.ToTensor()
 
-        self.augment_img = RandomTransformImage(ida_aug_conf, training) if augment else None
-        self.augment_bev = RandomTransformationBev(bev_aug_conf, training) if augment else None
+        self.augment_img = RandomTransformImage(ida_aug_conf, training) if augment_img else None
+        self.augment_bev = RandomTransformationBev(bev_aug_conf, training) if augment_bev else None
 
         self.to_tensor = super().__call__
 
@@ -245,6 +246,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
             image_new = image.resize((w_resize, h_resize), resample=Image.BILINEAR)
             image_new = image_new.crop((0, top_crop, image_new.width, image_new.height))
+            images.append(self.img_transform(image_new))
 
             I = np.float32(I_original)
             I[0, 0] *= w_resize / image.width
@@ -252,45 +254,60 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             I[1, 1] *= h_resize / image.height
             I[1, 2] *= h_resize / image.height
             I[1, 2] -= top_crop
-
             extrinsic = np.float32(extrinsic)
-            viewpad = np.float32(np.eye(4))
-            viewpad[:I.shape[0], :I.shape[1]] = I
-
-            images.append(self.img_transform(image_new))
-            intrinsics.append(torch.tensor(I))
-            lidar2img.append(torch.tensor(viewpad @ extrinsic))
+            
+            if not self.split_intrin_extrin:
+                viewpad = np.float32(np.eye(4))
+                viewpad[:I.shape[0], :I.shape[1]] = I
+                lidar2img.append(torch.tensor(viewpad @ extrinsic))
+            else:
+                intrinsics.append(torch.tensor(I))
 
         result = {
             'cam_idx': torch.LongTensor(sample.cam_ids),
             'image': torch.stack(images, 0),
-            'intrinsics': torch.stack(intrinsics, 0),
-            'extrinsics': torch.tensor(np.float32(sample.extrinsics)),
-            'lidar2img': torch.stack(lidar2img, 0),
         }
+
+        sensor = {}
+        if not self.split_intrin_extrin:
+            sensor = {
+                'lidar2img': torch.stack(lidar2img, 0),
+            }
+        else:
+            sensor = {
+                'intrinsics': torch.stack(intrinsics, 0),
+                'extrinsics': torch.tensor(np.float32(sample.extrinsics)),
+            }
+
+        result.update(sensor)
         return result
     
     def get_cameras_augm(self, sample: Sample, **kwargs):
         images = list()
+        intrinsics = list()
+        extrinsics = list()
         lidar2img = list()
 
-        for image_path, I_original, extrinsic in zip(sample.images, sample.intrinsics, sample.extrinsics):
+        for image_path, intrinsic, extrinsic in zip(sample.images, sample.intrinsics, sample.extrinsics):
             image = Image.open(self.dataset_dir / image_path)
-
-            I = np.float32(I_original)
-            extrinsic = np.float32(extrinsic)
-            viewpad = np.float32(np.eye(4))
-            viewpad[:I.shape[0], :I.shape[1]] = I
-
             images.append(image)
-            lidar2img.append(torch.tensor(viewpad @ extrinsic))
-    
-        result = self.augment_img(
-            {
-                'image': images,
-                'lidar2img': lidar2img
-            }
-        )
+
+            intrinsic = np.float32(intrinsic)
+            extrinsic = np.float32(extrinsic)
+            if not self.split_intrin_extrin:
+                viewpad = np.float32(np.eye(4))
+                viewpad[:intrinsic.shape[0], :intrinsic.shape[1]] = intrinsic
+                lidar2img.append(torch.tensor(viewpad @ extrinsic))
+            else:
+                intrinsics.append(torch.tensor(intrinsic))
+                extrinsics.append(torch.tensor(extrinsic))
+        result = {'image': images}
+        if not self.split_intrin_extrin:
+            result.update({'lidar2img':lidar2img})
+        else:
+            result.update({'intrinsics':intrinsics, 'extrinsics':extrinsics})
+
+        result = self.augment_img(result)
         result['cam_idx'] = torch.LongTensor(sample.cam_ids)
 
         return result

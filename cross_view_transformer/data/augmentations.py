@@ -48,54 +48,36 @@ class RandomTransformImage(object):
 
     def __call__(self, results):
         resize, resize_dims, crop, flip, rotate = self.sample_augmentation()
-        
-        if len(results['lidar2img']) == len(results['image']):
-            for i in range(len(results['image'])):
-                # img = Image.fromarray(np.uint8(results['img'][i]))
-                img = results['image'][i]
-                
-                # resize, resize_dims, crop, flip, rotate = self._sample_augmentation()
-                img, ida_mat = self.img_transform(
-                    img,
-                    resize=resize,
-                    resize_dims=resize_dims,
-                    crop=crop,
-                    flip=flip,
-                    rotate=rotate,
-                )
-                results['image'][i] = self.transform(img) # np.array(img).astype(np.uint8)
+        shape = 4 if 'lidar2img' in results else 3
+        for i in range(len(results['image'])):
+            # img = Image.fromarray(np.uint8(results['img'][i]))
+            img = results['image'][i]
+            
+            # resize, resize_dims, crop, flip, rotate = self._sample_augmentation()
+            img, ida_mat = self.img_transform(
+                img,
+                resize=resize,
+                resize_dims=resize_dims,
+                crop=crop,
+                flip=flip,
+                rotate=rotate,
+                shape=shape,
+            )
+            results['image'][i] = self.transform(img) # np.array(img).astype(np.uint8)
+            if 'lidar2img' in results:
                 results['lidar2img'][i] = ida_mat @ results['lidar2img'][i]
+            elif 'intrinsics' in results:
+                results['intrinsics'][i] = ida_mat @ results['intrinsics'][i]
 
-        elif len(results['image']) == 6:
-            for i in range(len(results['image'])):
-                # img = Image.fromarray(np.uint8(results['img'][i]))
-                img = results['image'][i]
-                
-                # resize, resize_dims, crop, flip, rotate = self._sample_augmentation()
-                img, ida_mat = self.img_transform(
-                    img,
-                    resize=resize,
-                    resize_dims=resize_dims,
-                    crop=crop,
-                    flip=flip,
-                    rotate=rotate,
-                )
-                results['image'][i] = self.transform(img) # np.array(img).astype(np.uint8)
-
-            for i in range(len(results['lidar2img'])):
-                results['lidar2img'][i] = ida_mat @ results['lidar2img'][i]
-
-        else:
-            raise ValueError()
-
-        # results['ori_shape'] = [img.shape for img in results['img']]
-        # results['img_shape'] = [img.shape for img in results['img']]
-        # results['pad_shape'] = [img.shape for img in results['img']]
         results['image'] = torch.stack(results['image'], 0)
-        results['lidar2img'] = torch.stack(results['lidar2img'], 0)
+        if 'lidar2img' in results:
+            results['lidar2img'] = torch.stack(results['lidar2img'], 0)
+        elif 'intrinsics' in results:
+            results['intrinsics'] = torch.stack(results['intrinsics'], 0)
+            results['extrinsics'] = torch.stack(results['extrinsics'], 0)
         return results
 
-    def img_transform(self, img, resize, resize_dims, crop, flip, rotate):
+    def img_transform(self, img, resize, resize_dims, crop, flip, rotate, shape):
         """
         https://github.com/Megvii-BaseDetection/BEVStereo/blob/master/dataset/nusc_mv_det_dataset.py#L48
         """
@@ -132,7 +114,7 @@ class RandomTransformImage(object):
         ida_rot = A.matmul(ida_rot)
         ida_tran = A.matmul(ida_tran) + b
 
-        ida_mat = torch.eye(4)
+        ida_mat = torch.eye(shape)
         ida_mat[:2, :2] = ida_rot
         ida_mat[:2, 2] = ida_tran
 

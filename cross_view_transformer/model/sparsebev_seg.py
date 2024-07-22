@@ -34,7 +34,7 @@ class SparseBEVSeg(nn.Module):
             scale: float = 1.0,
             box_encoder_type='',
             threshold=0.5,
-            fusion=None,
+            fusion=0.0,
             sparse=False,
     ):
         super().__init__()
@@ -53,10 +53,7 @@ class SparseBEVSeg(nn.Module):
         self.box_encoder_type = box_encoder_type
         self.decoder = decoder
         self.threshold = threshold
-        if fusion:
-            self.fusion = 0.85 # nn.Parameter(torch.zeros((1)))
-        else:
-            self.fusion = fusion
+        self.fusion = fusion
         self.sparse = sparse
 
     def forward(self, batch):
@@ -83,28 +80,31 @@ class SparseBEVSeg(nn.Module):
 
             output.update(pred_box)
 
-            if self.fusion is not None:
+            if self.fusion:
                 masks = self.get_mask(pred_box)
-                if self.sparse:
-                    N, C, H, W = x.shape
+                masks_features = x * masks
+                alpha = self.fusion #.sigmoid()
+                x = alpha * masks_features + (1 - alpha) * x
+               
+            elif self.sparse:
+                masks = self.get_mask(pred_box)
+                N, C, H, W = x.shape
 
-                    # Step 1: Flatten the mask and get the indices of non-zero elements
-                    mask_flat = masks.view(N, -1)
-                    indices = torch.nonzero(mask_flat, as_tuple=False).int()
-                    
-                    # Step 2: Extract the valid features using the indices
-                    valid_features = x.view(N, C, -1).permute(0, 2, 1)[indices[:, 0], indices[:, 1]]
-                    
-                    # Step 3: Create the sparse tensor
-                    # The coordinates should be in the format (batch_index, z, y, x)
-                    coords = torch.cat([indices[:, 0:1], torch.div(indices[:, 1:], W, rounding_mode='floor'), indices[:, 1:] % W], dim=1)
+                # Step 1: Flatten the mask and get the indices of non-zero elements
+                mask_flat = masks.view(N, -1)
+                indices = torch.nonzero(mask_flat, as_tuple=False).int()
+                if not indices.any():
+                    indices = torch.zeros((N,2)).to(x.device).int()
+                
+                # Step 2: Extract the valid features using the indices
+                valid_features = x.view(N, C, -1).permute(0, 2, 1)[indices[:, 0], indices[:, 1]]
+                
+                # Step 3: Create the sparse tensor
+                # The coordinates should be in the format (batch_index, z, y, x)
+                coords = torch.cat([indices[:, 0:1], torch.div(indices[:, 1:], W, rounding_mode='floor'), indices[:, 1:] % W], dim=1)
 
-                    # Create the sparse tensor
-                    x = spconv.SparseConvTensor(features=valid_features, indices=coords, spatial_shape=(H, W), batch_size=N)
-                else:
-                    masks_features = x * masks
-                    alpha = self.fusion #.sigmoid()
-                    x = alpha * masks_features + (1 - alpha) * x
+                # Create the sparse tensor
+                x = spconv.SparseConvTensor(features=valid_features, indices=coords, spatial_shape=(H, W), batch_size=N)
                 # print(alpha)
                 # import matplotlib.pyplot as plt
                 # fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(10, 10))
@@ -119,19 +119,21 @@ class SparseBEVSeg(nn.Module):
 
         if self.head is not None:
             pred_bev = self.head(x)
-            if self.fusion is not None:
-                pred_bev['pred_mask'] = masks
+            if self.fusion:
                 for k in pred_bev:
                     x = pred_bev[k]
                     masks_features = x * masks
                     alpha = self.fusion
                     x = alpha * masks_features + (1 - alpha) * x
                     pred_bev[k] = x
+                pred_bev['mask'] = masks.bool()
+
             elif self.sparse:
-                pred_bev['pred_mask'] = masks
                 for k in pred_bev:
                     if isinstance(pred_bev[k], spconv.SparseConvTensor):
                         pred_bev[k] = pred_bev[k].dense()
+                pred_bev['mask'] = masks.bool()
+            
             output.update(pred_bev)
 
         return output

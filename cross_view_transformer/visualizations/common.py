@@ -70,7 +70,7 @@ COLORS_2 = {
     'LD':                     (130, 130, 130),
     'nothing':                (200, 200, 200),
     'DRIVABLE':               (255, 127, 80),
-    'PED':                    (255, 61, 99),
+    'CROSSING':                (255, 61, 99),
     'WALKWAY':                (0, 207, 191),
     'CARPARK':                (34, 139, 34),
     'STOPLINE':               (138, 43, 226)
@@ -144,12 +144,13 @@ def resize(src, dst=None, shape=None, idx=0):
 class BaseViz:
     SEMANTICS = []
 
-    def __init__(self, label_indices=[i for i in range(12)], colormap='inferno',key = ['STATIC','DIVIDER','bev','ped'], flip=False, box='', bev=True, orientation=False, mask=False, box_3d=True):
+    def __init__(self, label_indices=[i for i in range(15)], colormap='inferno',key = ['STATIC','DIVIDER','bev','ped'], flip=False, box='', bev=True, orientation=False, mask=False, box_3d=True):
+        
         self.label_indices = label_indices
-        self.SEMANTICS = [self.SEMANTICS[i] for i in self.label_indices]
-        self.colors = get_colors(self.SEMANTICS)
+        SEMANTICS = [self.SEMANTICS[i] for i in self.label_indices]
+        self.colors = get_colors(SEMANTICS)
         self.colormap = colormap
-        self.cmap = COLORS_2#MAP_PALETTE if 'DRIVABLE' in key else COLORS_2
+        self.cmap = COLORS_2
         self.key = key
         self.flip = flip
         self.box = box
@@ -472,7 +473,7 @@ class BaseViz:
     def visualize_mask(self, batch, b, pred):
         if not 'mask' in pred:
             return []
-        mask = pred['mask'][b].float().cpu().numpy()
+        mask = pred['mask'][b,0].float().cpu().numpy()
         img = np.stack([mask, mask, mask], axis=-1)
         img = (img * 255).astype(np.uint8)
 

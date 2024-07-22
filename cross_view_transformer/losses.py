@@ -167,9 +167,10 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
             if pred_mask is not None:
                 mask = mask & pred_mask
             loss = loss[mask]
-            
+
         elif pred_mask is not None:
-            loss = loss[mask]
+            loss = loss[pred_mask]
+            loss = torch.nan_to_num(loss)
 
         return loss.mean()
     

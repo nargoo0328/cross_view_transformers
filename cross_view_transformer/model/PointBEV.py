@@ -21,80 +21,52 @@ class PointBEV(nn.Module):
     def __init__(
             self,
             backbone,
-            encoder,
-            encoder_type,
-            unet,
+            decoder,
+            mode,
             neck=None,
-            box_encoder=None,
             outputs: dict = {},
             dim_last: int = 64,
-            sparse: bool = False,
             multi_head: bool = True,
     ):
         super().__init__()
 
         self.norm = Normalize()
         self.backbone = backbone
-
-        self.encoder = encoder
-        self.encoder_type = encoder_type
-        self.box_encoder = box_encoder
-
-        self.unet = unet
         self.neck = neck if neck is not None else nn.Identity()
-
-        dim_total = 0
-        dim_max = 0
-        for _, (start, stop) in outputs.items():
-            assert start < stop
-
-            dim_total += stop - start
-            dim_max = max(dim_max, stop)
-
-        assert dim_max == dim_total
+        self.mode = mode
+        self.encoder = PointBEV_Encoder(mode)
+        self.decoder = decoder
         
         self.outputs = outputs
-        self.sparse = sparse
-        if not sparse:
-            if multi_head:
-                layer_dict = {}
-                for k, (start, stop) in outputs.items():
-                    layer_dict[k] = nn.Sequential(
-                    nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
-                    nn.InstanceNorm2d(dim_last),
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(dim_last, stop-start, 1)
-                )
-                self.head = nn.ModuleDict(layer_dict)
-            else:
-                self.head = nn.Sequential(
-                    nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
-                    nn.InstanceNorm2d(dim_last),
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(dim_last, dim_max, 1)
-                )
-        else:
-            algo = spconv.ConvAlgo.Native
-            if multi_head:
-                layer_dict = {}
-                for k, (start, stop) in outputs.items():
-                    layer_dict[k] = spconv.SparseSequential(
-                        spconv.SubMConv2d(dim_last, dim_last, 3, padding=1, bias=False, algo=algo),
-                        nn.InstanceNorm1d(dim_last, momentum=0.1),
-                        nn.ReLU(inplace=False),
-                        spconv.SubMConv2d(
-                            dim_last, out_channels=stop-start, kernel_size=1, padding=0, algo=algo
-                        )
-                    )
-                self.head = nn.ModuleDict(layer_dict)
-            else:
-                self.head = spconv.SparseSequential(
+        algo = spconv.ConvAlgo.Native
+        if multi_head:
+            layer_dict = {}
+            for k, (start, stop) in outputs.items():
+                layer_dict[k] = spconv.SparseSequential(
                     spconv.SubMConv2d(dim_last, dim_last, 3, padding=1, bias=False, algo=algo),
-                    nn.BatchNorm1d(dim_last, momentum=0.1),
+                    nn.InstanceNorm1d(dim_last, momentum=0.1),
                     nn.ReLU(inplace=False),
-                    spconv.SubMConv2d(dim_last, dim_max, 1, algo=algo),
+                    spconv.SubMConv2d(
+                        dim_last, out_channels=stop-start, kernel_size=1, padding=0, algo=algo
+                    )
                 )
-            
+            self.head = nn.ModuleDict(layer_dict)
+        else:
+            dim_total = 0
+            dim_max = 0
+            for _, (start, stop) in outputs.items():
+                assert start < stop
+
+                dim_total += stop - start
+                dim_max = max(dim_max, stop)
+
+            assert dim_max == dim_total
+            self.head = spconv.SparseSequential(
+                spconv.SubMConv2d(dim_last, dim_last, 3, padding=1, bias=False, algo=algo),
+                nn.BatchNorm1d(dim_last, momentum=0.1),
+                nn.ReLU(inplace=False),
+                spconv.SubMConv2d(dim_last, dim_max, 1, algo=algo),
+            )
         self.multi_head = multi_head
 
     def forward_head(self, feats):
@@ -107,54 +79,30 @@ class PointBEV(nn.Module):
     def forward(self, batch):
         b, n, _, _, _ = batch['image'].shape
         image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
-        lidar2img = batch['lidar2img']
         extrinsics = batch['extrinsics']
         intrinsics = batch['intrinsics']
         intrinsics = update_intrinsics(intrinsics, 1 / 8)
 
         features = [y for y in self.backbone(self.norm(image))] 
         features = self.neck(features)
-
-        # features = [rearrange(f, '(b n) ... -> b n ...',b=b,n=n) for f in features]
-        if isinstance(features, list):
-            # mlvl_feats = [rearrange(f, '(b n) ... -> b n ...',b=b,n=n) for f in features]
-            # features = mlvl_feats[-2]
-            # G = 4
-            # for lvl, feat in enumerate(mlvl_feats):
-            #     GC = feat.shape[2]
-            #     C = GC // G
-            #     feat = rearrange(feat.clone(), 'b n (g c) h w -> (b g) n h w c',g=G,c=C)
-
-            #     mlvl_feats[lvl] = feat.contiguous()
-            features = [rearrange(f, '(b n) ... -> b n ...',b=b,n=n) for f in features]
-        else:
-            features = rearrange(features, '(b n) ... -> b n ...',b=b,n=n)
+        features = rearrange(features, '(b n) ... -> b n ...',b=b,n=n)
         
-        if self.encoder_type == 'seg':
-            pred_coarse, coarse_idx, coarse_mask = self.encoder(features, extrinsics, intrinsics)
-            pred_coarse = self.unet(pred_coarse[:,0], grid_idx=coarse_idx, spatial_shape=[200,200], batch_size=b)
-            pred_coarse = self.forward_head(pred_coarse)
+        pred_coarse, coarse_idx, coarse_mask = self.encoder(features, extrinsics, intrinsics)
+        pred_coarse = self.decoder(pred_coarse, grid_idx=coarse_idx, spatial_shape=[200,200], batch_size=b)
+        pred_coarse = self.forward_head(pred_coarse)
 
-            # if not self.training:
+        if self.mode == "dense" or not self.training:
             return {k: v if isinstance(v, torch.Tensor) else v.dense() for k, v in pred_coarse.items()}
-        else:
-            pass
 
-        if self.box_encoder is not None:
-            pred_box = self.box_encoder(features, lidar2img)
-        else:
-            pred_box = {}
-        
-        pred_fine, fine_idx, fine_mask = self.encoder(features, extrinsics, intrinsics, pred_seg=pred_coarse, pred_mask=coarse_mask, pred_box=pred_box, view=batch['5d_view'])
-        pred_fine = self.unet(pred_fine, grid_idx=fine_idx, spatial_shape=[200,200], batch_size=b)
+        pred_fine, fine_idx, fine_mask = self.encoder(features, extrinsics, intrinsics, pred_seg=pred_coarse, pred_mask=coarse_mask)
+        pred_fine = self.decoder(pred_fine, grid_idx=fine_idx, spatial_shape=[200,200], batch_size=b)
         pred_fine = self.forward_head(pred_fine)
 
         sum_masks = coarse_mask.float() + fine_mask.float()
         union = sum_masks.bool()
         non_union = (~union).float()
         out = {}
-        out['mask'] = union.squeeze(1)
-        out.update(pred_box)
+        out['mask'] = union
 
         # process output
         for k in pred_coarse.keys():
@@ -173,11 +121,12 @@ class PointBEV_Encoder(nn.Module):
         mode='',
     ):
         super().__init__()
+        assert mode in ['dense', 'rnd_pillars']
         in_shape = {'projector': [200, 200, 8], 'spatial_bounds': [-49.75, 49.75, -49.75, 49.75, -3.375, 5.375]}
         voxel_ref = "spatial"
         sampled_kwargs = {
             'N_coarse': 2500, 
-            'mode': 'dense', # 'rnd_pillars', 
+            'mode': mode, # 'rnd_pillars', 
             'val_mode': 'dense', 
             'patch_size': 1, 
             'compress_height': False, 
@@ -195,11 +144,11 @@ class PointBEV_Encoder(nn.Module):
         self.view_transform = GridSampleVT(
             grid_sample_mode = 'sparse_optim',
             input_sparse = True,
-            return_sparse = False,
+            return_sparse = True #if mode == 'dense' else True,
         )
 
 
-    def forward(self, img_feats, extrinsics, intrinsics, pred_seg=None, pred_mask=None, pred_box=None, view=None):
+    def forward(self, img_feats, extrinsics, intrinsics, pred_seg=None, pred_mask=None):
         
         b = extrinsics.shape[0]
         device = extrinsics.device
@@ -213,15 +162,13 @@ class PointBEV_Encoder(nn.Module):
             "Wfeats":Wfeats
         }
 
-        if pred_seg is None and pred_box is None:
+        if pred_seg is None:
             dict_vox = {}
             dict_vox.update(self.coord_selector._get_vox_coords_and_idx(b, device))
         else:
             dict_vox = self.coord_selector._get_sampled_fine_coords(
                 pred_seg,
                 pred_mask,
-                pred_box,
-                view,
             )
 
         dict_vox.update(self.projector(dict_shape, dict_vox, extrinsics, intrinsics))

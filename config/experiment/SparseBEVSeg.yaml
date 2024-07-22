@@ -5,7 +5,6 @@ defaults:
 
   - override /loss: objects_loss
   - override /metrics: objects_metrics
-  - override /visualization: nuscenes_objects
     
 data:
   num_classes: 15

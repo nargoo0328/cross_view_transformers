@@ -391,12 +391,23 @@ class SampledCoordSelector(CoordSelector):
         return xy_vox_idx
 
     @torch.no_grad()
-    def _get_sampled_fine_coords(self, out, masks, pred_box, view) -> Dict[str, Tensor]:
+    def _get_sampled_fine_coords(self, out, masks) -> Dict[str, Tensor]:
         """Select points according to the coarse pass logit output.
         Args:
             - N_anchor: Number of anchor points to select most relevant locations (highest logits).
             - Patch_size: Size of the patch to select around the anchor points.
         """
+
+        def _parse_output(pred):
+            pred_l = []
+            for k in pred:
+                pred_class = pred[k]
+                if not isinstance(pred_class, torch.Tensor):
+                    pred_class = pred_class.dense()
+                pred_l.append(pred_class)
+            out_score = torch.stack(pred_l, dim=1)
+            return out_score.sigmoid().max(dim=1)[0]
+        
         # Alias
         sb = self.spatial_bounds
         N_anchor: str | int = self.N_anchor
@@ -404,9 +415,11 @@ class SampledCoordSelector(CoordSelector):
         X, Y, Z = self.spatial_range
         N_fine = self.N_fine
 
-        assert 'bev' in out
-        out_score = out['bev'].dense()
-        out_score = (out_score[:, None].sigmoid() * masks[:, None]).flip(-2, -1)
+        # assert 'bev' in out
+        # out_score = out['bev'].dense()
+        # out_score = (out_score[:, None].sigmoid() * masks[:, None]).flip(-2, -1)
+        out_score = _parse_output(out)
+        out_score = (out_score[:, None] * masks[:, None]).flip(-2, -1)
 
         b, t, _, h, w = out_score.shape
         device = out_score.device
@@ -421,12 +434,6 @@ class SampledCoordSelector(CoordSelector):
         flat_idx = rearrange(flat_idx, "c bt hw -> bt hw c", c=2)
         mask = self._get_fine_mask(out_score, flat_idx, (X, Y), N_anchor)
         mask = self._densify_mask(mask, patch_size)
-
-        if pred_box :
-            pred_boxes = pred_box['pred_boxes'].clone()
-            pred_logits = pred_box['pred_logits'].clone()
-            box_mask = self._get_box_mask(pred_boxes, pred_logits, view).flip(-2, -1).flatten(1)
-            mask = box_mask + mask
 
         xy_vox_idx = self._select_idx_to_keep(mask, N_fine, (X, Y))
 
@@ -489,58 +496,6 @@ class SampledCoordSelector(CoordSelector):
         # Combine the masks for different boxes using logical OR
         mask = box_mask.any(dim=1)
         return mask
-
-    @torch.no_grad()
-    def _get_sampled_fine_coords_box(self, pred, view) -> Dict[str, Tensor]:
-        """Select points according to the coarse pass logit output.
-        Args:
-            - N_anchor: Number of anchor points to select most relevant locations (highest logits).
-            - Patch_size: Size of the patch to select around the anchor points.
-        """
-        # Alias
-        sb = self.spatial_bounds
-        X, Y, Z = self.spatial_range
-        N_fine = self.N_fine
-
-        pred_boxes = pred['pred_boxes'].clone()
-        pred_logits = pred['pred_logits'].clone()
-        mask = self._get_box_mask(pred_boxes, pred_logits, view).flip(-2, -1).flatten(1)
-
-        b = pred_logits.shape[0]
-        t = 1
-        device = pred_logits.device
-
-        # Indices stop gradients, i.e no gradient backpropagation.
-        flat_idx = self._get_flat_idx(b * t, X*Y, device)
-        flat_idx = rearrange(flat_idx, "c bt hw -> bt hw c", c=2)
-        xy_vox_idx = self._select_idx_to_keep(mask, N_fine, (X, Y))
-
-        xy_vox_idx = repeat(xy_vox_idx, "bt N_fine c -> bt N_fine z c", z=Z, c=2)
-        z_vox_idx = torch.arange(Z, device=device)
-        z_vox_idx = repeat(
-            z_vox_idx, "z -> bt N_fine z 1", N_fine=xy_vox_idx.size(1), bt=b * t
-        )
-        vox_idx = torch.cat([xy_vox_idx, z_vox_idx], dim=-1).to(dtype=torch.int32)
-        vox_idx = rearrange(vox_idx, "bt N_fine z c -> bt c (N_fine z)", c=3)
-
-        # Corresponding points
-        vox_coords = vox_idx / torch.tensor([X - 1, Y - 1, Z - 1], device=device).view(
-            1, 3, 1
-        )
-        scale = torch.tensor(
-            [sb[1] - sb[0], sb[3] - sb[2], sb[5] - sb[4]], device=device
-        ).view(1, 3, 1)
-        dist = torch.tensor([abs(sb[0]), abs(sb[2]), abs(sb[4])], device=device).view(
-            1, 3, 1
-        )
-        vox_coords = vox_coords * scale - dist
-
-        # Out
-        dict_vox = {
-            "vox_coords": rearrange(vox_coords, "b c (xy z) -> b c xy 1 z", z=Z),
-            "vox_idx": rearrange(vox_idx, "b c (xy z) -> b c xy 1 z", z=Z),
-        }
-        return dict_vox
 
     def _get_fine_mask(
         self,

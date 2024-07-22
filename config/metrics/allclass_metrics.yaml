@@ -1,0 +1,35 @@
+iou_vehicle:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: ${data.label_indices}
+  min_visibility: 2
+
+iou_ped:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[9]]
+  min_visibility: 2
+  key: ped
+
+iou_STATIC:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[0,1]]
+  key: STATIC
+
+iou_DIVIDER:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[2,3]]
+  key: DIVIDER
+
+iou_CROSSING:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[12]]
+  key: CROSSING
+
+iou_WALKWAY:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[13]]
+  key: WALKWAY
+
+iou_CARPARK:
+  _target_: cross_view_transformer.metrics.IoUMetric
+  label_indices: [[14]]
+  key: CARPARK

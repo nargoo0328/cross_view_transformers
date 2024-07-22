@@ -40,6 +40,33 @@ DIVIDER:
   alpha: -1.0
   key: DIVIDER
 
+CROSSING_weight: 1.0
+CROSSING:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: [[12]]
+  gamma: 2.0
+  alpha: -1.0
+  key: CROSSING
+
+WALKWAY_weight: 1.0
+WALKWAY:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: [[13]]
+  gamma: 2.0
+  alpha: -1.0
+  key: WALKWAY
+
+CARPARK_weight: 1.0
+CARPARK:
+  _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+  label_indices: [[14]]
+  gamma: 2.0
+  alpha: -1.0
+  key: CARPARK
+
 # pedDice_weight: 0.1
 # pedDice:
 #   _target_: cross_view_transformer.losses.diceLoss

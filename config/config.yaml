@@ -3,7 +3,7 @@ defaults:
 
   - model: null
   - data: ???
-  - visualization: null
+  - visualization: nuscenes_viz
 
   - loss: null
   - metrics: null

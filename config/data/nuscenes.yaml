@@ -29,8 +29,6 @@ image:
   w: 480 #480
   top_crop: 46
 
-augment: True
-
 ida_aug_conf:
   resize_lim: [0.38,0.55] # [0.495,0.505]
   final_dim: [224, 480]
