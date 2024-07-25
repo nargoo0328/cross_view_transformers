@@ -13,7 +13,7 @@ class DecoderBlock(torch.nn.Module):
         dim = out_channels // factor
 
         self.conv = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Upsample(scale_factor=factor, mode='bilinear', align_corners=False),
             nn.Conv2d(in_channels, dim, 3, padding=1, bias=False),
             nn.BatchNorm2d(dim),
             nn.ReLU(inplace=True),
@@ -181,7 +181,7 @@ from torchvision.models.resnet import resnet18
 class SimpleBEVDecoder(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
-        backbone = resnet18(pretrained=False, zero_init_residual=True)
+        backbone = resnet18(zero_init_residual=True)
         self.first_conv = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = backbone.bn1
         self.relu = backbone.relu

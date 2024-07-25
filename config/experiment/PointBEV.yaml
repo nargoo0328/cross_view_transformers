@@ -13,7 +13,6 @@ visualization:
   # box: True
     
 data:
-  num_classes: 15
   # box: pseudo
   split_intrin_extrin: True
   augment_img: True

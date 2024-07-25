@@ -1158,7 +1158,8 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
 
     valid_mask = valid_mask.permute(0, 1, 3, 4, 2)  # [B, T, Q, GP, N]
     sample_points_cam = sample_points_cam.permute(0, 1, 3, 4, 2, 5)  # [B, T, Q, GP, N, 2]
-
+    # for i in range(B):
+    #     print((valid_mask[i].sum(-1)==0).sum())
     # prepare batched indexing
     i_batch = torch.arange(B, dtype=torch.long, device=sample_points.device)
     i_query = torch.arange(Q, dtype=torch.long, device=sample_points.device)

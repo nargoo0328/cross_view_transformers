@@ -412,7 +412,7 @@ class GridSampleVT(nn.Module):
     def _add_coords_embd(self, vox_feats, vox_coords):
         """Add coordinate embedding, voxel coordinates should be normalized and in the seqaug reference frame."""
 
-        coordembd = self.coordembd(vox_coords)
+        coordembd = self.coordembd(vox_coords, normalized=True)
         coordembd = rearrange(
             coordembd, "b t zcam ycam xcam c -> (b t) c zcam ycam xcam"
         )
@@ -459,7 +459,7 @@ class GridSampleVT(nn.Module):
             vox_idx, bev_feats, batch_indices, (b, t)
         )
         return bev_feats, mask, indices
-
+@torch.no_grad()
 def positional_encoding(v: torch.Tensor, bvals: torch.Tensor, avals: torch.Tensor) -> torch.Tensor:
     vp = 2 * torch.pi * bvals * torch.unsqueeze(v, -1)
     vp_cat = torch.cat(

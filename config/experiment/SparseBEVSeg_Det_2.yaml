@@ -3,19 +3,21 @@ defaults:
   - override /model: SparseBEVSegDet_Model_2 # BEVSD_model
   - override /data: nuscenes_vehicle
 
-  - override /loss: objects_loss
-  - override /metrics: objects_metrics
-  - override /visualization: nuscenes_objects
-
-# visualization:
-#   box: True
+  - override /loss: allclass_loss
+  - override /metrics: allclass_metrics
+    
+visualization:
+  key: ['STATIC', 'CROSSING', 'WALKWAY', 'CARPARK', 'DIVIDER', 'bev', 'ped']
+  # mask: True
+  # label_indices: [0,1,2,3,4,5,6,7,8,9,10,11]
+  # box: True
     
 data:
-  num_classes: 15
   # box: pseudo
-  # orientation: True
-  # box_3d: False
-
+  split_intrin_extrin: False
+  augment_img: True
+  augment_bev: False
+  
 # model:
 #   box_only: True
 val_only: False

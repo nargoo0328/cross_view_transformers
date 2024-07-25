@@ -1,35 +1,35 @@
 _target_: cross_view_transformer.model.sparsebev_seg.SparseBEVSeg
 
 backbone:
-  # _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
-  _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
+  # _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
 
-  model_name: resnet50
-  out_indices: [1,2,3,4]
-  fpn: True
+  # model_name: efficientnet_b4
+  # out_indices: [1,2,3,4]
+  # fpn: True
 
-  # freeze_layers: [layer1]
-  embed_dims: ${model.encoder.embed_dims}
+  # # freeze_layers: [layer1]
+  # embed_dims: ${model.encoder.embed_dims}
 
+  _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
   image_height: ${data.image.h}
   image_width: ${data.image.w}
 
-# neck:
-#   _target_: cross_view_transformer.model.backbones.agp.AGPNeck
+neck:
+  _target_: cross_view_transformer.model.backbones.agp.AGPNeck
 
-#   align_res_layer:
-#     _target_: cross_view_transformer.model.backbones.agp.AlignRes
-#     mode: "upsample"
-#     scale_factors: [1, 2]
+  align_res_layer:
+    _target_: cross_view_transformer.model.backbones.agp.AlignRes
+    mode: "upsample"
+    scale_factors: [1, 2]
 
-#   prepare_c_layer:
-#     _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
+  prepare_c_layer:
+    _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
 
-#     in_channels: [56, 160]
-#     mode: "doubleconv"
-#     tail_mode: "conv2d"
+    in_channels: [56, 160]
+    mode: "doubleconv"
+    tail_mode: "conv2d"
   
-#   list_output: True
+  list_output: True
 
 encoder:
   _target_: cross_view_transformer.model.sparsebev_seg.SegHead
@@ -50,10 +50,10 @@ encoder:
     pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
 
     embed_dims: ${model.encoder.embed_dims}
-    num_levels: 4
+    num_levels: 1
     h: ${data.image.h}
     w: ${data.image.w}
-    num_points: 16
+    num_points: 8
 
 decoder:
   _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
@@ -79,3 +79,8 @@ head:
   outputs:
     bev: [0, 1]
     ped: [1, 2]
+    STATIC: [2, 3]
+    DIVIDER: [3, 4]
+    CROSSING: [4, 5]
+    WALKWAY: [5, 6]
+    CARPARK: [6, 7]

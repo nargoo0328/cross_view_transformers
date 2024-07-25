@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 import pytorch_lightning as pl
 import torch.distributed as dist
 # from pytorch_lightning.utilities.distributed import group as _group
@@ -85,15 +86,20 @@ class ModelModule(pl.LightningModule):
                 self.compute_nusc_metric(prefix)
             return
         metrics = self.metrics.compute()
-
+        ious = dict()
         for key, value in metrics.items():
             if isinstance(value, dict):
                 for subkey, val in value.items():
                     # print(f'{prefix}/metrics/{key}{subkey}: {val}')
                     self.log(f'{prefix}/metrics/{key}{subkey}', val, on_epoch=True, logger=True)
             else:
-                self.log(f'{prefix}/metrics/{key}', value, on_epoch=True, logger=True)
+                class_key = key.split('_')[1]
+                ious.setdefault(class_key, []).append(value)
 
+                self.log(f'{prefix}/metrics/{key}', value, on_epoch=True, logger=True)
+        max_iou = [max(ious[k]) for k in ious]
+
+        self.log(f'{prefix}/metrics/mIoU', np.mean(np.array(max_iou)), on_epoch=True, logger=True)
         self.metrics.reset()
 
 
