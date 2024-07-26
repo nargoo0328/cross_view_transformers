@@ -61,7 +61,7 @@ def main(cfg):
         ModelCheckpoint(
             filename='last',
             # monitor ='val/metrics/map_50',
-            monitor ='val/metrics/iou_vehicle_@0.40',
+            monitor ='val/metrics/mIoU',
             # monitor ='train/metrics/iou_vehicle_@0.60',
             # monitor = 'val/metrics/@0.40',
             mode='max',

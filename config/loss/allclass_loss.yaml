@@ -1,19 +1,20 @@
-ped_weight: 10.0
-ped:
+PED_weight: 10.0
+PED:
   _target_: cross_view_transformer.losses.BinarySegmentationLoss
 
   label_indices: [[9]]
   gamma: 2.0
-  alpha: 0.75
-  key: ped
+  alpha: 0.80
+  key: PED
 
-visible_weight: 5.0
-visible:
+VEHICLE_weight: 5.0
+VEHICLE:
   _target_: cross_view_transformer.losses.BinarySegmentationLoss
 
   label_indices: ${data.label_indices}
   gamma: 2.0
   alpha: -1.0
+  key: VEHICLE
 
 # center_weight: 0.0
 # center:
@@ -22,7 +23,7 @@ visible:
 #   gamma: 2.0
 #   min_visibility: 2
 
-STATIC_weight: 0.1
+STATIC_weight: 1.0
 STATIC:
   _target_: cross_view_transformer.losses.BinarySegmentationLoss
 
@@ -31,7 +32,7 @@ STATIC:
   alpha: -1.0
   key: STATIC
 
-DIVIDER_weight: 1.0
+DIVIDER_weight: 2.0
 DIVIDER:
   _target_: cross_view_transformer.losses.BinarySegmentationLoss
 
@@ -40,7 +41,7 @@ DIVIDER:
   alpha: -1.0
   key: DIVIDER
 
-CROSSING_weight: 1.0
+CROSSING_weight: 5.0
 CROSSING:
   _target_: cross_view_transformer.losses.BinarySegmentationLoss
 
@@ -58,7 +59,7 @@ WALKWAY:
   alpha: -1.0
   key: WALKWAY
 
-CARPARK_weight: 1.0
+CARPARK_weight: 5.0
 CARPARK:
   _target_: cross_view_transformer.losses.BinarySegmentationLoss
 

@@ -58,12 +58,12 @@ COLORS_2 = {
 
     # dynamic
     'bev':                    (255, 158, 0),
-    'vehicle':                 (255, 158, 0),
+    'VEHICLE':                 (255, 158, 0),
     # 'truck':                (255, 99, 71),
     # 'bus':                  (255, 127, 80),
     # 'trailer':              (255, 140, 0),
     # 'construction':         (233, 150, 70),
-    'ped':                    (0, 0, 230),
+    'PED':                    (0, 0, 230),
     # 'motorcycle':           (255, 61, 99),
     # 'bicycle':              (220, 20, 60),
     'RD':                     (255, 200, 0),
@@ -144,12 +144,11 @@ def resize(src, dst=None, shape=None, idx=0):
 class BaseViz:
     SEMANTICS = []
 
-    def __init__(self, label_indices=[i for i in range(15)], colormap='inferno',key = ['STATIC','DIVIDER','bev','ped'], flip=False, box='', bev=True, orientation=False, mask=False, box_3d=True):
+    def __init__(self, label_indices=[i for i in range(15)], key = ['STATIC','DIVIDER','bev','ped'], flip=False, box='', bev=True, orientation=False, mask=False, box_3d=True):
         
         self.label_indices = label_indices
         SEMANTICS = [self.SEMANTICS[i] for i in self.label_indices]
         self.colors = get_colors(SEMANTICS)
-        self.colormap = colormap
         self.cmap = COLORS_2
         self.key = key
         self.flip = flip
@@ -175,27 +174,6 @@ class BaseViz:
         points = view @ points.T
         cv2.fillPoly(img, [points.astype(np.int32)[:2].T], color=(164, 0, 0))
         return img
-    
-    def visualize_pred(self, bev, pred, threshold=None):
-        """
-        (c, h, w) torch float {0, 1}
-        (c, h, w) torch float [0-1]
-        """
-        if isinstance(bev, torch.Tensor):
-            bev = bev.cpu().numpy().transpose(1, 2, 0)
-
-        if isinstance(pred, torch.Tensor):
-            pred = pred.cpu().numpy().transpose(1, 2, 0)
-
-        if self.label_indices is not None:
-            bev = [bev[..., idx].max(-1) for idx in self.label_indices]
-            bev = np.stack(bev, -1)
-
-        if threshold is not None:
-            pred = (pred > threshold).astype(np.float32)
-
-        result = colorize((255 * pred.squeeze(2)).astype(np.uint8), self.colormap)
-        return result
 
     def visuaulize_pred_v2(self,pred, view, threshold):
         class_num = pred.shape[0]
@@ -203,7 +181,7 @@ class BaseViz:
         pred[pred<=threshold]=0
         pre=torch.zeros(200,200,3).type(torch.uint8)
         pre += 200
-        for i,k in enumerate(self.key):
+        for i, k in enumerate(self.key):
             # if i==1 or i==3:
             #     continue
             pre[...,0][pred[i]==1]=self.cmap[k][0]

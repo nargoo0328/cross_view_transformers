@@ -1,13 +1,12 @@
-iou_vehicle:
+iou_VEHICLE:
   _target_: cross_view_transformer.metrics.IoUMetric
   label_indices: ${data.label_indices}
-  min_visibility: 2
+  key: VEHICLE
 
-iou_ped:
+iou_PED:
   _target_: cross_view_transformer.metrics.IoUMetric
   label_indices: [[9]]
-  min_visibility: 2
-  key: ped
+  key: PED
 
 iou_STATIC:
   _target_: cross_view_transformer.metrics.IoUMetric

@@ -1253,7 +1253,7 @@ class SegSampling(nn.Module):
     def init_weights(self):
         bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
         nn.init.zeros_(self.sampling_offset.weight)
-        nn.init.uniform_(bias[:, 0:3], -4, 4)
+        nn.init.uniform_(bias[:, 0:3], -3.5, 3.5)
 
     def forward(self, query, mlvl_feats, reference_points, lidar2img, pos_encoder=None, scale=1.0):
 

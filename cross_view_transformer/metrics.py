@@ -66,10 +66,8 @@ class BaseIoUMetric(Metric):
         #self.tn += (~pred & ~label).sum(0)
 
     def compute(self):
-        thresholds = self.thresholds.squeeze(0)
         ious = self.tp / (self.tp + self.fp + self.fn + 1e-7)
-        
-        return {f'@{t.item():.2f}': i.item() for t, i in zip(thresholds, ious)}
+        return ious
 
     def show_result(self):
         thresholds = self.thresholds.squeeze(0)
@@ -127,6 +125,11 @@ class IoUMetric(BaseIoUMetric):
             pred = pred.reshape(-1)
             
         return super().update(pred, label)
+    
+    def compute(self):
+        ious = super().compute()
+        max_iou = ious.max()
+        return {f"IoU_{self.key}": max_iou}
 
 class BoxMAPMetric(MeanAveragePrecision):
     def __init__(self, box_3d, output_format, metrics_setting=None):

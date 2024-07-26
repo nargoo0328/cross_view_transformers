@@ -77,8 +77,8 @@ head:
     # in_channels: 128
 
   outputs:
-    bev: [0, 1]
-    ped: [1, 2]
+    VEHICLE: [0, 1]
+    PED: [1, 2]
     STATIC: [2, 3]
     DIVIDER: [3, 4]
     CROSSING: [4, 5]

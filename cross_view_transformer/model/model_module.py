@@ -86,20 +86,17 @@ class ModelModule(pl.LightningModule):
                 self.compute_nusc_metric(prefix)
             return
         metrics = self.metrics.compute()
-        ious = dict()
+        ious = list()
         for key, value in metrics.items():
             if isinstance(value, dict):
                 for subkey, val in value.items():
                     # print(f'{prefix}/metrics/{key}{subkey}: {val}')
                     self.log(f'{prefix}/metrics/{key}{subkey}', val, on_epoch=True, logger=True)
             else:
-                class_key = key.split('_')[1]
-                ious.setdefault(class_key, []).append(value)
-
+                ious.append(value)
                 self.log(f'{prefix}/metrics/{key}', value, on_epoch=True, logger=True)
-        max_iou = [max(ious[k]) for k in ious]
 
-        self.log(f'{prefix}/metrics/mIoU', np.mean(np.array(max_iou)), on_epoch=True, logger=True)
+        self.log(f'{prefix}/metrics/mIoU', torch.stack(ious).mean(), on_epoch=True, logger=True)
         self.metrics.reset()
 
 
