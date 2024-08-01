@@ -5,19 +5,19 @@ defaults:
 
   - override /loss: vehicle_loss
   - override /metrics: vehicle_metrics
-  - override /visualization: nuscenes_objects
-
+    
 visualization:
-  bev: True
-  key: ['bev']
+  key: ['VEHICLE']
+  # mask: True
+  label_indices: [4,5,6,7,8,10,11]
+  # box: True
     
 data:
-  num_classes: 15
   # box: pseudo
-  # bev: False
-  # orientation: True
-  # box_3d: False
-
+  split_intrin_extrin: False
+  augment_img: True
+  augment_bev: True
+  
 # model:
 #   box_only: True
 val_only: False

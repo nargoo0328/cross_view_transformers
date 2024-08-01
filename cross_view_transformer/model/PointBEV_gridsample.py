@@ -459,6 +459,7 @@ class GridSampleVT(nn.Module):
             vox_idx, bev_feats, batch_indices, (b, t)
         )
         return bev_feats, mask, indices
+    
 @torch.no_grad()
 def positional_encoding(v: torch.Tensor, bvals: torch.Tensor, avals: torch.Tensor) -> torch.Tensor:
     vp = 2 * torch.pi * bvals * torch.unsqueeze(v, -1)

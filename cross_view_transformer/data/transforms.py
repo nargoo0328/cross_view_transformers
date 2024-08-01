@@ -207,7 +207,7 @@ class SaveDataTransform:
 
 
 class LoadDataTransform(torchvision.transforms.ToTensor):
-    def __init__(self, dataset_dir, labels_dir, image_config, num_classes, image_data=True, lidar=None, box='',split_intrin_extrin=False, orientation=False, augment_img=False, augment_bev=False, no_class=False, ida_aug_conf=None, bev_aug_conf=None, training=True, box_3d=True, **kwargs):
+    def __init__(self, dataset_dir, labels_dir, image_config, num_classes, image_data=True, lidar=None, box='',split_intrin_extrin=False, orientation=False, augment_img=False, augment_bev=False, no_class=False, img_params=None, bev_aug_conf=None, training=True, box_3d=True, **kwargs):
         super().__init__()
 
         self.dataset_dir = pathlib.Path(dataset_dir)
@@ -216,7 +216,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         self.num_classes = num_classes
         self.image_data = image_data
         self.lidar = lidar
-        assert box in ['','gt','pseudo']
+        assert box in ['', 'gt', 'pseudo']
         self.box = box
         self.orientation = orientation
         self.no_class = no_class
@@ -225,7 +225,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         self.img_transform = torchvision.transforms.ToTensor()
 
-        self.augment_img = RandomTransformImage(ida_aug_conf, training) if augment_img else None
+        self.augment_img = RandomTransformImage(img_params, training) if augment_img else None
         self.augment_bev = RandomTransformationBev(bev_aug_conf, training) if augment_bev else None
 
         self.to_tensor = super().__call__
@@ -286,7 +286,6 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         images = list()
         intrinsics = list()
         extrinsics = list()
-        lidar2img = list()
 
         for image_path, intrinsic, extrinsic in zip(sample.images, sample.intrinsics, sample.extrinsics):
             image = Image.open(self.dataset_dir / image_path)
@@ -294,20 +293,24 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
             intrinsic = np.float32(intrinsic)
             extrinsic = np.float32(extrinsic)
-            if not self.split_intrin_extrin:
-                viewpad = np.float32(np.eye(4))
-                viewpad[:intrinsic.shape[0], :intrinsic.shape[1]] = intrinsic
-                lidar2img.append(torch.tensor(viewpad @ extrinsic))
-            else:
-                intrinsics.append(torch.tensor(intrinsic))
-                extrinsics.append(torch.tensor(extrinsic))
+            intrinsics.append(intrinsic)
+            extrinsics.append(torch.tensor(extrinsic))
+
         result = {'image': images}
-        if not self.split_intrin_extrin:
-            result.update({'lidar2img':lidar2img})
-        else:
-            result.update({'intrinsics':intrinsics, 'extrinsics':extrinsics})
+        result.update({'intrinsics':intrinsics, 'extrinsics':extrinsics})
 
         result = self.augment_img(result)
+        result['image'] = torch.stack(result['image'], 0)
+        result['intrinsics'] = torch.stack(result['intrinsics'], 0)
+        result['extrinsics'] = torch.stack(result['extrinsics'], 0)
+
+        lidar2img = list()
+        for intrinsic,  extrinsic in zip(result['intrinsics'], result['extrinsics']):
+            viewpad = torch.eye(4, dtype=torch.float32)
+            viewpad[:intrinsic.shape[0], :intrinsic.shape[1]] = intrinsic
+            lidar2img.append(viewpad @ extrinsic)
+        result['lidar2img'] = torch.stack(lidar2img, 0)
+
         result['cam_idx'] = torch.LongTensor(sample.cam_ids)
 
         return result
@@ -531,7 +534,19 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         scene_dir = self.labels_dir / sample.scene
         gt_box = np.load(scene_dir / sample.gt_box, allow_pickle=True)['gt_box']
         V = sample.view
+
+        # bev segmentation
         bev = np.zeros((8, 200, 200), dtype=np.uint8)
+
+        # center & offset
+        center_score = np.zeros((200, 200), dtype=np.float32)
+        center_offset = np.zeros((200, 200, 2), dtype=np.float32)
+        buf = np.zeros((200, 200), dtype=np.uint8)
+        coords = np.stack(np.meshgrid(np.arange(200), np.arange(200)), -1).astype(np.float32)
+        sigma = 1
+
+        # box
+        tmp = []
         # lidar2img @ bev_augm @ pts
         for box_data in gt_box:
             if len(box_data) == 0:
@@ -544,22 +559,56 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             box = Box(translation, size, sincos2quaternion(np.sin(yaw),np.cos(yaw)))
             
             points = box.bottom_corners()
+            center = points.mean(-1)[:, None] # unsqueeze 1
+
             homog_points = np.ones((4, 4))
             homog_points[:3, :] = points
             homog_points[-1, :] = 1
             points = self._prepare_augmented_boxes(bev_augm, homog_points)
             points[2] = 1 # add 1 for next matrix matmul
             points = (V @ points)[:2]
-
             cv2.fillPoly(bev[int(box_data[-1])], [points.round().astype(np.int32).T], 1, INTERPOLATION)
 
+            homog_points = np.ones((4, 1))
+            homog_points[:3, :] = center
+            homog_points[-1, :] = 1
+            center = self._prepare_augmented_boxes(bev_augm, homog_points)
+            center[2] = 1 # add 1 for next matrix matmul
+            center = (V @ center)[:2, 0] # squeeze 1
+
+            buf.fill(0)
+            cv2.fillPoly(buf, [points.round().astype(np.int32).T], 1, INTERPOLATION)
+            mask = buf > 0
+            center_offset[mask] = center[None] - coords[mask]
+            center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
+
+            x1 = np.min(points[0])
+            x2 = np.max(points[0])
+            y1 = np.min(points[1])
+            y2 = np.max(points[1])
+            tmp.append([x1, y1, x2, y2, int(box_data[-1])])
             # TODO: add offset & centerness
         
         bev = self.to_tensor(255 * bev.transpose(1,2,0))
-        # import matplotlib.pyplot as plt
-        # plt.imshow(bev[0])
-        # plt.savefig("/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/augm_bev.png")
-        return bev
+        center_score = self.to_tensor(center_score)
+        center_offset = self.to_tensor(center_offset)
+        tmp = np.array(tmp)
+
+        if len(tmp) == 0:
+            return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}
+
+        boxes = np.zeros((len(tmp), 4))
+        labels = tmp[:,4].astype(np.int_)
+
+        boxes[:,0] = (tmp[:, 0] + tmp[:,2]) / 2.0
+        boxes[:,1] = (tmp[:,1] + tmp[:,3]) / 2.0
+        boxes[:,2] = tmp[:,2] - tmp[:,0]
+        boxes[:,3] = tmp[:,3] - tmp[:,1]
+
+        # normalized
+        boxes = boxes / 200.0
+        
+        return bev, center_score, center_offset, {'labels':labels, 'boxes':boxes.astype(np.float32)}
     
     def _parse_bev_augm(self, result, bev_augm):
         box_cxcy = result['boxes'][:,:2] # N 2
@@ -573,7 +622,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         return result
 
-    def get_bbox_from_bev(self, bev, view, bev_augm):
+    def get_bbox_from_bev(self, bev, view):
         # pts_bev = V @ augm @ pts_lidar
         # augm^-1 @ V^-1 @ pts_bev = pts_lidar
         
@@ -651,46 +700,23 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         if self.augment_bev is not None:
             bev_augm = self.augment_bev()
-            augm_bev_gt = self.get_bev_from_gtbbox(batch, bev_augm)
+            augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d = self.get_bev_from_gtbbox(batch, bev_augm)
+
             result['bev'][4:12] = augm_bev_gt
+            result['center'] = augm_center_score
+            result['offset'] = augm_center_offset
+            if self.box == 'pseudo':
+                result.update(self.get_bbox_from_bev(result['bev'], result['view']))
+            elif self.box == 'gt':
+                result.update(gtbox_3d)
+
             bev_augm = torch.from_numpy(bev_augm)
+            result['extrinsics'] = result['extrinsics'] @ bev_augm
             result['lidar2img'] = result['lidar2img'] @ bev_augm
             # result = self._parse_bev_augm(result, bev_augm)
             # result['bev_augm'] = bev_augm
-            result.update(self.get_bbox_from_bev(result['bev'], result['view'], bev_augm))
 
         if self.lidar:
             result.update(self.get_lidar(batch))
 
         return result
-
-def get_box_from_bev(batch, class_index, view=False):
-    view_inv = np.linalg.inv(np.array(batch['view']))
-    label = batch['bev'][:,:, class_index] / 255
-    bev_pts = map2points(label)
-
-    if len(bev_pts) == 0:
-        return np.empty((0,4)) 
-
-    clusters = apply_dbscan(bev_pts, 1.0, 3)
-    box_list = []
-
-    for j in range(clusters.max()+1):
-        tmp_index = np.where(clusters==j)[0]
-        (x1,y1),(x2,y2) = get_min_max(bev_pts[tmp_index])
-        if view is not None:
-            pts = np.array([[x1,y1,1],[x2,y2,1]]).transpose()
-            # pts = np.array([[(x1+x2)/2,(y1+y2)/2,1]]).transpose()
-            pts = view_inv @ pts
-            x1, y1, x2, y2 = pts[:2].transpose().reshape(-1)
-            x1 = (x1+50) / 100
-            x2 = (x2+50) / 100
-            y1 = (y1+50) / 100
-            y2 = (y2+50) / 100
-
-        box_list.append([x1,y1,x2,y2])
-
-    if len(box_list) == 0:
-        return np.empty((0,4)) 
-    
-    return np.array(box_list) 

@@ -2,14 +2,8 @@ _target_: cross_view_transformer.model.PointBEV.PointBEV
 
 outputs:
   VEHICLE: [0, 1]
-  PED: [1, 2]
-  STATIC: [2, 3]
-  DIVIDER: [3, 4]
-  CROSSING: [4, 5]
-  WALKWAY: [5, 6]
-  CARPARK: [6, 7]
-  # center: [1, 2]
-  # offset: [2, 4]
+  center: [1, 2]
+  offset: [2, 4]
 
 dim_last: 128
 mode: dense

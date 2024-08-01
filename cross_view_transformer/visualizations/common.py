@@ -335,8 +335,8 @@ class BaseViz:
                 # x1, x2 = parse_xx(x1, x2)
                 # y1, y2 = parse_xx(y1, y2)
                 
-                if not check_index(x1, y1, x2, y2):
-                    continue
+                # if not check_index(x1, y1, x2, y2):
+                #     continue
                 color = COLORS[DYNAMIC[label]]
                 cv2.rectangle(gtBox_bev, (x1, y1), (x2, y2), color, -1)
         
@@ -410,10 +410,11 @@ class BaseViz:
         gt_box = gt_box.cpu().numpy()
         gt_box = box_cxcywh_to_xyxy(gt_box, transform=False)
 
-        for (x1,y1,x2,y2), label in zip(gt_box, labels):
-            if not check_index(x1, y1, x2, y2):
-                continue
+        for pts, label in zip(gt_box, labels):
+            # if not check_index(x1, y1, x2, y2):
+            #     continue
             color = COLORS[DYNAMIC[label]]
+            x1,y1,x2,y2 = pts.round()
             cv2.rectangle(gtBox_bev, (int(x1), int(y1)), (int(x2), int(y2)), color, -1)
         
         gtBox_bev = self.draw_ego(gtBox_bev, view)
@@ -437,12 +438,11 @@ class BaseViz:
         pred_boxes = (pred_boxes * 200).cpu().numpy()
         pred_boxes = box_cxcywh_to_xyxy(pred_boxes, transform=False)
 
-        for (x1,y1,x2,y2), score, label in zip(pred_boxes, scores, labels):
+        for pts, score, label in zip(pred_boxes, scores, labels):
             if score < threshold:
                 continue
-            if not check_index(x1, y1, x2, y2):
-                continue
             color = COLORS[DYNAMIC[label]]
+            x1,y1,x2,y2 = pts.round()
             cv2.rectangle(predBox_bev, (int(x1), int(y1)), (int(x2), int(y2)), color, -1)
         
         predBox_bev = self.draw_ego(predBox_bev, view)

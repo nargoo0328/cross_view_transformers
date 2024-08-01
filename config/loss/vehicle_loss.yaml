@@ -1,4 +1,4 @@
-center_weight: 0.1
+center_weight: 2.0
 center:
   _target_: cross_view_transformer.losses.SpatialRegressionLoss
 
@@ -19,5 +19,6 @@ visible:
 
   label_indices: ${data.label_indices}
   gamma: 2.0
-  alpha: 0.66
+  alpha: -1.0
+  key: VEHICLE
   # min_visibility: 2

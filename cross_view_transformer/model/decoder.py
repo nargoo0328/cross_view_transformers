@@ -10,7 +10,7 @@ class DecoderBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, factor, skip_dim=0, residual=False):
         super().__init__()
 
-        dim = out_channels 
+        dim = out_channels // factor
 
         self.conv = nn.Sequential(
             nn.Upsample(scale_factor=factor, mode='bilinear', align_corners=False),

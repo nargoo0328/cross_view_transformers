@@ -27,21 +27,22 @@ loader:
 
 # AdamW
 optimizer:
-  lr: 4e-4 # 4e-3
-  weight_decay: 1e-3 # 1e-5
+  lr: 3e-4 # 4e-3
+  weight_decay: 1e-7 # 1e-5
 
 # OneCycleLR
 scheduler:
-  div_factor: 4                                       # starts at lr / 10
-  pct_start: 0.3                                      # reaches lr at 30% of total steps
-  final_div_factor: 10                                 # ends at lr / 10 / 10
+  div_factor: 3                                       # starts at lr / 10
+  pct_start: 0.05                                      # reaches lr at 30% of total steps
+  final_div_factor: 20                                 # ends at lr / 10 / 10
   max_lr: ${optimizer.lr}
   total_steps: ${trainer.max_steps}
   cycle_momentum: False
+  anneal_strategy: "linear"
 
 # lightning trainer
 trainer:
-  max_steps : 300000
+  max_steps : 320000
   log_every_n_steps: 40
 
   devices: -1

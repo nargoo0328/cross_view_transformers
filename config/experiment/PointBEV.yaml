@@ -3,21 +3,21 @@ defaults:
   - override /model: PointBEVModel # BEVSD_model
   - override /data: nuscenes_vehicle
 
-  - override /loss: allclass_loss
-  - override /metrics: allclass_metrics
-
+  - override /loss: vehicle_loss
+  - override /metrics: vehicle_metrics
+    
 visualization:
-  key: ['STATIC', 'CROSSING', 'WALKWAY', 'CARPARK', 'DIVIDER', 'bev', 'ped']
+  key: ['VEHICLE']
   # mask: True
-  # label_indices: [0,1,2,3,4,5,6,7,8,9,10,11]
+  label_indices: [4,5,6,7,8,10,11]
   # box: True
     
 data:
   # box: pseudo
   split_intrin_extrin: True
   augment_img: True
-  augment_bev: False
-
+  augment_bev: True
+  
 # model:
 #   box_only: True
 val_only: False

@@ -29,13 +29,14 @@ image:
   w: 480 #480
   top_crop: 46
 
-ida_aug_conf:
-  resize_lim: [0.38,0.55] # [0.495,0.505]
-  final_dim: [224, 480]
-  crop_offset: 40
+img_params:
+  scale: [0.294,0.308]
+  zoom_lim: [0.95,1.05]
+  final_dim: [224,480]
   rot_lim: [-2.5, 2.5]
+  crop_up_pct: [0.83, 0.83]
+  rand_flip: False
   H: 900
   W: 1600
-  rand_flip: False
 
 bev_aug_conf: [30.,20.,0.,20.,0.,0.]

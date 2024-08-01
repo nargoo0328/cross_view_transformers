@@ -9,6 +9,7 @@ import torch
 import numpy as np
 
 from PIL import Image
+from PIL.ImageTransform import AffineTransform
 
 class AugBase(torchvision.transforms.ToTensor):
     def __init__(self):
@@ -41,120 +42,149 @@ class GeometricAug(AugBase):
                           mode='symmetric')
 
 class RandomTransformImage(object):
-    def __init__(self, ida_aug_conf=None, training=True):
-        self.ida_aug_conf = ida_aug_conf
+    def __init__(self, img_params=None, training=True):
+        self.img_params = img_params
         self.training = training
         self.transform = torchvision.transforms.ToTensor()
 
     def __call__(self, results):
-        resize, resize_dims, crop, flip, rotate = self.sample_augmentation()
-        shape = 4 if 'lidar2img' in results else 3
+        final_dims = self.img_params["final_dim"][::-1]
         for i in range(len(results['image'])):
             # img = Image.fromarray(np.uint8(results['img'][i]))
             img = results['image'][i]
-            
-            # resize, resize_dims, crop, flip, rotate = self._sample_augmentation()
-            img, ida_mat = self.img_transform(
-                img,
-                resize=resize,
-                resize_dims=resize_dims,
-                crop=crop,
-                flip=flip,
-                rotate=rotate,
-                shape=shape,
-            )
-            results['image'][i] = self.transform(img) # np.array(img).astype(np.uint8)
-            if 'lidar2img' in results:
-                results['lidar2img'][i] = ida_mat @ results['lidar2img'][i]
-            elif 'intrinsics' in results:
-                results['intrinsics'][i] = ida_mat @ results['intrinsics'][i]
+            scale, resize_dims, crop, flip, rotate, crop_zoom, zoom = self.sample_augmentation()
 
-        results['image'] = torch.stack(results['image'], 0)
-        if 'lidar2img' in results:
-            results['lidar2img'] = torch.stack(results['lidar2img'], 0)
-        elif 'intrinsics' in results:
-            results['intrinsics'] = torch.stack(results['intrinsics'], 0)
-            results['extrinsics'] = torch.stack(results['extrinsics'], 0)
+            ida_mat = self.get_affinity_matrix_from_augm(
+                scale, crop[1], crop_zoom, flip, rotate, final_dims, img.size
+            )
+            img = self.pil_preprocess_from_affine_mat(img, ida_mat, final_dims)
+            results['image'][i] = self.transform(img) # np.array(img).astype(np.uint8)
+            results['intrinsics'][i] = torch.tensor(ida_mat @ results['intrinsics'][i])
+
         return results
 
-    def img_transform(self, img, resize, resize_dims, crop, flip, rotate, shape):
-        """
-        https://github.com/Megvii-BaseDetection/BEVStereo/blob/master/dataset/nusc_mv_det_dataset.py#L48
-        """
-        def get_rot(h):
-            return torch.Tensor([
-                [np.cos(h), np.sin(h)],
-                [-np.sin(h), np.cos(h)],
-            ])
+    def get_affinity_matrix_from_augm(
+        self, scale, crop_sky, crop_zoom, flip, rotate, final_dims, W_H=(1600, 900)
+    ):        
+        res = list(W_H)
 
-        ida_rot = torch.eye(2)
-        ida_tran = torch.zeros(2)
+        affine_mat = np.eye(3)
+        # Resize scaling factor.
+        affine_mat[:2, :2] *= scale
+        # Update res.
+        res = [_ * scale for _ in res]
 
-        # adjust image
-        img = img.resize(resize_dims)
-        img = img.crop(crop)
+        # Centered crop zoom.
+        w, h = final_dims
+        affine_mat[0, :2] *= w / (crop_zoom[2] - crop_zoom[0])
+        affine_mat[1, :2] *= h / (crop_zoom[3] - crop_zoom[1])
+        affine_mat[0, 2] += (w - res[0] * w / (crop_zoom[2] - crop_zoom[0])) / 2
+        affine_mat[1, 2] += (
+            h - (res[1] + crop_sky) * h / (crop_zoom[3] - crop_zoom[1])
+        ) / 2
+
+        # Flip
         if flip:
-            img = img.transpose(method=Image.FLIP_LEFT_RIGHT)
-        img = img.rotate(rotate)
+            flip_mat = np.eye(3)
+            flip_mat[0, 0] = -1
+            flip_mat[0, 2] += w
+            affine_mat = flip_mat @ affine_mat
 
-        # post-homography transformation
-        ida_rot *= resize
-        ida_tran -= torch.Tensor(crop[:2])
-        
-        if flip:
-            A = torch.Tensor([[-1, 0], [0, 1]])
-            b = torch.Tensor([crop[2] - crop[0], 0])
-            ida_rot = A.matmul(ida_rot)
-            ida_tran = A.matmul(ida_tran) + b
-        
-        A = get_rot(rotate / 180 * np.pi)
-        b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2
-        b = A.matmul(-b) + b
-
-        ida_rot = A.matmul(ida_rot)
-        ida_tran = A.matmul(ida_tran) + b
-
-        ida_mat = torch.eye(shape)
-        ida_mat[:2, :2] = ida_rot
-        ida_mat[:2, 2] = ida_tran
-
-        return img, ida_mat
+        # Rotate
+        theta = -rotate * np.pi / 180
+        cos_theta, sin_theta = np.cos(theta), np.sin(theta)
+        x, y = w / 2, h / 2
+        rot_center_mat = np.array(
+            [
+                [cos_theta, -sin_theta, -x * cos_theta + y * sin_theta + x],
+                [sin_theta, cos_theta, -x * sin_theta - y * cos_theta + y],
+                [0, 0, 1],
+            ]
+        )
+        affine_mat = rot_center_mat @ affine_mat
+        return affine_mat.astype(np.float32)
+    
+    def pil_preprocess_from_affine_mat(self, img, affine_mat, final_dims):
+        inv_mat = np.linalg.inv(affine_mat)
+        img = img.transform(
+            size=tuple(final_dims), method=AffineTransform(inv_mat[:2].ravel())
+        )
+        return img
 
     def sample_augmentation(self):
-        """
-        https://github.com/Megvii-BaseDetection/BEVStereo/blob/master/dataset/nusc_mv_det_dataset.py#L247
-        """
-        H, W = self.ida_aug_conf['H'], self.ida_aug_conf['W']
-        fH, fW = self.ida_aug_conf['final_dim']
+        """Corresponds to get_resizing_and_cropping_parameters in the original code with some improvements.
+        Available transformations:
+            - scale
+            - crop sky
+            - crop zoom
+            - final scale
+            - flip
+            - rotate.
 
+        Ex: [1600,900] -> scale: 0.5 [800,450] -> crop sky: 10 [800,440] -> ...
+        """
+        # Specify the input image dimensions
+        H, W = self.img_params["H"], self.img_params["W"]
+
+        # During training
         if self.training:
-            resize = np.random.uniform(*self.ida_aug_conf['resize_lim'])
-            resize_dims = (int(W * resize), int(H * resize))
-            newW, newH = resize_dims
-            
-            crop_h = int((newH - fH)/2)
-            crop_w = int((newW - fW)/2)
+            # Randomly choose a resize factor, e.g: 0.3.
+            scale = np.random.uniform(*self.img_params["scale"])
 
-            crop_offset = self.ida_aug_conf['crop_offset']
-            crop_w = crop_w + int(np.random.uniform(-crop_offset, crop_offset))
-            crop_h = crop_h + int(np.random.uniform(-crop_offset, crop_offset))
+            # Resize images, e.g: [270,480]
+            newW, newH = int(W * scale), int(H * scale)
 
-            crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
-            
+            # Resize.
+            resize_dims = (newW, newH)
+
+            # Crop the sky.
+            crop_h = int(
+                (1 - np.random.uniform(*self.img_params["crop_up_pct"])) * newH
+            )
+            crop = (0, crop_h, newW, newH)
+
+            # Zoom in, zoom out: neutral=1, e.g: [0.95,1.05]
+            zoom = np.random.uniform(*self.img_params["zoom_lim"])
+            crop_zoomh, crop_zoomw = (
+                ((newH - crop_h) * (1 - zoom)) // 2,
+                (newW * (1 - zoom)) // 2,
+            )
+            crop_zoom = (
+                -crop_zoomw,
+                -crop_zoomh,
+                crop_zoomw + newW,
+                crop_zoomh + newH - crop_h,
+            )
+
+            # Allow flip and rotate during training.
             flip = False
-            if self.ida_aug_conf['rand_flip'] and np.random.choice([0, 1]):
+            if self.img_params["rand_flip"] and np.random.choice([0, 1]):  # False
                 flip = True
-            rotate = np.random.uniform(*self.ida_aug_conf['rot_lim'])
+            rotate = np.random.uniform(*self.img_params["rot_lim"])  # ~U(0,0)
         else:
-            resize = max(fH / H, fW / W)
-            resize_dims = (int(W * resize), int(H * resize))
-            crop_h = 0
-            crop_w = 0
-            crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
+            # Randomly choose a resize factor, e.g: 0.3.
+            # Images: [900,1600]
+            scale = np.mean(self.img_params["scale"])
+
+            # Resize images, e.g: [270,480]
+            newW, newH = int(W * scale), int(H * scale)  # 480, 270
+
+            # Resize.
+            resize_dims = (newW, newH)
+
+            # Remove the sky.
+            crop_h = int((1 - np.mean(self.img_params["crop_up_pct"])) * newH)
+            crop = (0, crop_h, newW, newH)
+
+            # Zoom inside image.
+            zoom = 1.0
+            crop_zoom = (0, 0, newW, newH - crop_h)
+
+            # Flip and rotate
             flip = False
             rotate = 0
 
-        return resize, resize_dims, crop, flip, rotate
+        return scale, resize_dims, crop, flip, rotate, crop_zoom, zoom
     
 class RandomTransformationBev(object):
     def __init__(self, bev_aug_conf=None, training=True):
