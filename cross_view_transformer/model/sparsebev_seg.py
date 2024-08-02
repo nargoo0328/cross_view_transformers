@@ -567,13 +567,19 @@ class SegHead(nn.Module):
 
     def _init_bev_layers(self, H=25, W=25, Z=8, num_points_in_pillar=4, **kwargs):
 
-        zs = torch.linspace(0.5, Z - 0.5, num_points_in_pillar
-                                ).view(num_points_in_pillar, 1, 1).expand(num_points_in_pillar, H, W) / Z
+        # zs = torch.linspace(0.5, Z - 0.5, num_points_in_pillar
+        #                         ).view(num_points_in_pillar, 1, 1).expand(num_points_in_pillar, H, W) / Z
+        # xs = torch.linspace(0.5, W - 0.5, W
+        #                     ).flip(0).view(1, 1, W).expand(num_points_in_pillar, H, W) / W
+        # ys = torch.linspace(0.5, H - 0.5, H
+        #                     ).flip(0).view(1, H, 1).expand(num_points_in_pillar, H, W) / H
         xs = torch.linspace(0.5, W - 0.5, W
-                            ).flip(0).view(1, 1, W).expand(num_points_in_pillar, H, W) / W
+                            ).flip(0).view(1, W).expand(H, W) / W
         ys = torch.linspace(0.5, H - 0.5, H
-                            ).flip(0).view(1, H, 1).expand(num_points_in_pillar, H, W) / H
-        ref_3d = torch.stack((ys, xs, zs), -1)
+                            ).flip(0).view(H, 1).expand(H, W) / H
+        # ref_3d = torch.stack((ys, xs, zs), -1)
+        ref_3d = torch.stack((ys, xs), -1)
+        ref_3d = torch.cat([ref_3d, torch.zeros((H, W, 1)) + 0.5], dim=-1)
         self.register_buffer('grid', ref_3d, persistent=False) # z h w 3
         self.h = H
         self.w = W
@@ -720,9 +726,9 @@ class SegTransformerDecoderLayer(nn.Module):
         """
         if scale != 1.0:
             b, z = bev_pos.shape[:2]
-            bev_pos = rearrange(bev_pos, 'b z h w d -> (b z) d h w')
+            bev_pos = rearrange(bev_pos, 'b h w d -> b d h w')
             bev_pos = F.interpolate(bev_pos, scale_factor= 1 / scale, mode='bilinear')
-            bev_pos = rearrange(bev_pos, '(b z) d h w -> b z h w d', b=b ,z=z)
+            bev_pos = rearrange(bev_pos, 'b d h w -> b h w d')
 
         h, w = bev_query.shape[2:]
         # bev_pos_embed = self.position_encoder(bev_pos[:, 3]) # b h w 2 -> b h w d
@@ -775,30 +781,29 @@ class SegSampling(nn.Module):
 
     def forward(self, query, mlvl_feats, reference_points, lidar2img, pos_encoder=None, scale=1.0):
 
-        num_points_pillar = reference_points.shape[1]
+        # num_points_pillar = reference_points.shape[1]
         
         # sampling offset 
         sampling_offset = self.sampling_offset(query).sigmoid() # b (g p 3) h w
-        sampling_offset = rearrange(sampling_offset, 'b (g p1 p2 d) h w -> b (h w) g p1 p2 d',
+        sampling_offset = rearrange(sampling_offset, 'b (g p d) h w -> b (h w) g p d',
                             g=self.num_groups,
-                            p1=num_points_pillar,
-                            p2=self.num_points // num_points_pillar,
+                            p=self.num_points,
                             d=3
                         ).clone()
         sampling_offset[..., :2] = (sampling_offset[..., :2] * (0.25 * scale + self.eps) * 2) \
                                     - (0.25 * scale + self.eps)
-        sampling_offset[..., 2:3] = (sampling_offset[..., 2:3] * (0.5 + self.eps) * 2) \
-                                    - (0.5 + self.eps)
+        sampling_offset[..., 2:3] = (sampling_offset[..., 2:3] * (4.0 + self.eps) * 2) \
+                                    - (4.0 + self.eps)
         # sampling_offset = (sampling_offset * (0.25 * scale + self.eps) * 2) \
         #                             - (0.25 * scale + self.eps)
-        reference_points = rearrange(reference_points, 'b p1 h w d -> b (h w) 1 p1 1 d', d=3).clone()
+        reference_points = rearrange(reference_points, 'b h w d -> b (h w) 1 1 d', d=3).clone()
 
         reference_points[..., 0:1] = (reference_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
         reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
         reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
 
         reference_points = reference_points + sampling_offset
-        reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
+        # reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
 
         if self.scale_weights is not None:
             # scale weights

@@ -47,7 +47,7 @@ encoder:
     
     num_layers: 2
     num_groups: 1
-    pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+    pc_range: [-50.0, -50.0, -4, 50.0, 50.0, 4] # [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
 
     embed_dims: ${model.encoder.embed_dims}
     num_levels: 1
