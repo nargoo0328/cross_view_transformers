@@ -46,7 +46,7 @@ class BaseIoUMetric(Metric):
     """
     Computes intersection over union at given thresholds
     """
-    def __init__(self, thresholds=[0.35, 0.4, 0.5, 0.6]): # [0.4, 0.5, 0.6] np.linspace(0.2,0.5,13)
+    def __init__(self, thresholds=[0.37, 0.39, 0.4, 0.42, 0.43, 0.45, 0.5]): # [0.4, 0.5, 0.6] np.linspace(0.2,0.5,13)
         super().__init__(dist_sync_on_step=False)
         # super().__init__()
         thresholds = torch.FloatTensor(thresholds)

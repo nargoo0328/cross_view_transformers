@@ -197,10 +197,11 @@ class Encoder_eff(nn.Module):
         return x
     
 class EfficientNet_PointBEV(nn.Module):
-    def __init__(self, image_height, image_width, version="b4"):
+    def __init__(self, image_height, image_width, version="b4", checkpoint=False):
         super().__init__()
 
         self.version = version
+        self.checkpoint = checkpoint
         self._init_efficientnet(version)
 
         dummy = torch.rand(1, 3, image_height, image_width)
@@ -240,7 +241,11 @@ class EfficientNet_PointBEV(nn.Module):
                 drop_connect_rate *= float(idx) / len(
                     self._blocks
                 )  # scale drop connect_rate
-            x = block(x, drop_connect_rate=drop_connect_rate)
+            if self.training and self.checkpoint:
+                x = torch.utils.checkpoint.checkpoint(block, x, drop_connect_rate)
+            else:
+                x = block(x, drop_connect_rate=drop_connect_rate)
+            # x = block(x, drop_connect_rate=drop_connect_rate)
             if prev_x.size(2) > x.size(2):
                 endpoints[f"reduction_{len(endpoints)+1}"] = prev_x
             prev_x = x
