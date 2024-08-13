@@ -1,7 +1,6 @@
-_target_: cross_view_transformer.model.sparsebev_seg.SparseBEVSeg
+_target_: cross_view_transformer.model.two_stage.SparseBEVSeg
 
 backbone:
-  _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
   # _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
 
   # model_name: efficientnet_b4
@@ -11,6 +10,7 @@ backbone:
   # # freeze_layers: [layer1]
   # embed_dims: ${model.encoder.embed_dims}
 
+  _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
   image_height: ${data.image.h}
   image_width: ${data.image.w}
 
@@ -32,47 +32,51 @@ neck:
   list_output: True
 
 encoder:
-  _target_: cross_view_transformer.model.sparsebev_seg.SparseHead
+  _target_: cross_view_transformer.model.two_stage.TwoStageHead
 
   embed_dims: 128
 
   # bev
-  num_points_in_pillar: 8
   H: 200
   W: 200
   Z: 8
+  num_points_in_pillar: 8
 
   transformer:
-    _target_: cross_view_transformer.model.sparsebev_seg.SparseBEVTransformerDecoder
+    _target_: cross_view_transformer.model.sparsebev_seg.SegTransformerDecoder
     
-    n_layer: 1
+    up_scale: [4]
+    num_groups: 1
+    pc_range: [-50.0, -50.0, -4.0, 50.0, 50.0, 4.0] # [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
 
-    num_points_in_pillar: ${model.encoder.num_points_in_pillar}
     embed_dims: ${model.encoder.embed_dims}
-    pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
-    num_levels: 4
+    num_levels: 1
     h: ${data.image.h}
     w: ${data.image.w}
     num_points: 8
-    checkpointing: False
-    num_groups: 1
-    scale: 1.0
+
+decoder:
+  _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+  in_channels: ${model.encoder.embed_dims}
 
 head:
   _target_: cross_view_transformer.model.decoder.SegHead
 
-  dim_last: 128
+  dim_last: ${model.encoder.embed_dims}
   multi_head: True
-  decoder:
+  # decoder:
     # _target_: cross_view_transformer.model.decoder.BEVDecoder
-    
+
     # dim: ${model.encoder.embed_dims}
-    # blocks: [128, 128]
+    # blocks: [256, 128]
     # residual: True
     # factor: 2
-    _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-    in_channels: 128
+
+    # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+    # in_channels: 128
 
   outputs:
-    bev: [0, 1]
-    ped: [1, 2]
+    VEHICLE: [0, 1]
+    center: [1, 2]
+    offset: [2, 4]
+    # height: [4, 5]

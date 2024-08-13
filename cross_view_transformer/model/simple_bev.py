@@ -104,14 +104,14 @@ class SimpleBEVDecoder(nn.Module):
         return bev_feats
 
 class SimpleBEVDecoderLayer(nn.Module):
-    def __init__(self, embed_dims, num_points, pc_range, h, w):
+    def __init__(self, embed_dims, num_points, pc_range, h, w, position_encoder=None):
         super().__init__()
 
         self.embed_dims = embed_dims
         self.num_points = num_points
         self.pc_range = pc_range
 
-        self.position_encoder = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
+        self.position_encoder = position_encoder if position_encoder is not None else PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
         self.mid_conv = nn.Sequential(
             nn.Conv2d(num_points * 128, embed_dims * 4, 1),
             nn.GELU(),
@@ -125,8 +125,14 @@ class SimpleBEVDecoderLayer(nn.Module):
                 mlvl_feats, 
                 lidar2img,
                 bev_pos,
+                scale=1.0
             ):
         h, w = bev_pos.shape[2:4]
+        if scale != 1.0:
+            b, z = bev_pos.shape[:2]
+            bev_pos = rearrange(bev_pos, 'b z h w d -> (b z) d h w')
+            bev_pos = F.interpolate(bev_pos, scale_factor= 1 / scale, mode='bilinear')
+            bev_pos = rearrange(bev_pos, '(b z) d h w -> b z h w d', b=b, z=z)
 
         sampled_feat = self.sampling(
             mlvl_feats,

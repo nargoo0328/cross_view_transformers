@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - override /model: two_stage # BEVSD_model
+  - override /data: nuscenes_vehicle
+
+  - override /loss: vehicle_loss
+  - override /metrics: vehicle_metrics
+    
+visualization:
+  key: ['VEHICLE']
+  # mask: True
+  label_indices: [4,5,6,7,8,10,11]
+  # box: True
+    
+data:
+  # box: pseudo
+  split_intrin_extrin: False
+  augment_img: True
+  augment_bev: True
+
+val_only: False
