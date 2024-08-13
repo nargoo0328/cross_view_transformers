@@ -9,12 +9,13 @@ from fvcore.nn import sigmoid_focal_loss
 logger = logging.getLogger(__name__)
 
 class SpatialRegressionLoss(torch.nn.Module):
-    def __init__(self, norm, min_visibility=2, ignore_index=None):
+    def __init__(self, norm, min_visibility=2, ignore_index=None, key=''):
         super(SpatialRegressionLoss, self).__init__()
         # center:2, offset: 1
         self.norm = norm
         self.min_visibility = min_visibility
         self.ignore_index = ignore_index
+        self.key = key
 
         if norm == 1:
             self.loss_fn = F.l1_loss
@@ -26,13 +27,8 @@ class SpatialRegressionLoss(torch.nn.Module):
     def forward(self, prediction, batch, eps=1e-6):
 
         pred_mask = prediction['mask'] if 'mask' in prediction else None
-
-        if self.norm == 2:
-            prediction = prediction['center']
-            target = batch['center']
-        else:
-            prediction = prediction['offset']
-            target = batch['offset']
+        prediction = prediction[self.key]
+        target = batch[self.key]
 
         assert len(prediction.shape) == 4, 'Must be a 4D tensor'
         # ignore_index is the same across all channels
@@ -47,18 +43,55 @@ class SpatialRegressionLoss(torch.nn.Module):
         
         # loss = loss[mask[:, None]]
         # return loss.mean()
-    
+
+        mask = torch.ones_like(loss, dtype=torch.bool)
         if self.min_visibility is not None:
             mask = batch['visibility'] >= self.min_visibility
             mask = mask[:, None]
-        else:
-            mask = torch.ones_like(loss, dtype=torch.bool)
 
         if pred_mask is not None:
             mask = mask & pred_mask[:, None]
 
         if self.ignore_index is not None:
-            mask = mask * target != self.ignore_index
+            mask = mask * (target != self.ignore_index)
+            
+        return (loss * mask).sum() / (mask.sum() + eps)
+
+class HeightRegressionLoss(torch.nn.Module):
+    def __init__(self, norm, min_visibility=2, key='height', radius=0.5):
+        super(HeightRegressionLoss, self).__init__()
+        # center:2, offset: 1
+        self.norm = norm
+        self.min_visibility = min_visibility
+        self.key = key
+        self.radius = radius
+
+        if norm == 1:
+            self.loss_fn = F.l1_loss
+        elif norm == 2:
+            self.loss_fn = F.mse_loss
+        else:
+            raise ValueError(f'Expected norm 1 or 2, but got norm={norm}')
+
+    def forward(self, prediction, batch, eps=1e-6):
+
+        prediction = prediction[self.key]
+        target = batch[self.key]
+        assert len(prediction.shape) == 4, 'Must be a 4D tensor'
+
+        num_points = prediction.shape[1]
+        target = target.expand(-1, num_points, -1, -1) # b 1 h w -> b p h w
+        loss = self.loss_fn(prediction, target, reduction='none')
+        loss -= self.radius
+        loss = torch.clamp(loss, min=0.0)
+
+        mask = torch.ones_like(loss, dtype=torch.bool)
+        # only supervised occupied region
+        mask = mask * (target != 0.0)
+
+        if self.min_visibility is not None:
+            mask = batch['visibility'] >= self.min_visibility
+            mask = mask[:, None]
             
         return (loss * mask).sum() / (mask.sum() + eps)
 

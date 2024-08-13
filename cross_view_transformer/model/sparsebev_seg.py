@@ -61,123 +61,17 @@ class SparseBEVSeg(nn.Module):
         image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
         lidar2img = batch['lidar2img']
         features = [rearrange(self.down(y),'(b n) ... -> b n ...', b=b,n=n) for y in self.backbone(self.norm(image))] 
+
         if self.neck is not None:
             features = self.neck(features)
             features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
-
-        output = {}
         
-        if self.box_encoder_type == 'img':
-            pred_box = self.box_encoder(features, lidar2img)
-            output.update(pred_box)
-
-        if self.encoder is not None:
-            x = self.encoder(features, lidar2img)
-            x = self.decoder(x)
-        
-        if self.box_encoder_type == 'bev':
-            pred_box = self.box_encoder(x)
-
-            output.update(pred_box)
-
-            if self.fusion:
-                masks = self.get_mask(pred_box)
-                masks_features = x * masks
-                alpha = self.fusion #.sigmoid()
-                x = alpha * masks_features + (1 - alpha) * x
-               
-            elif self.sparse:
-                masks = self.get_mask(pred_box)
-                N, C, H, W = x.shape
-
-                # Step 1: Flatten the mask and get the indices of non-zero elements
-                mask_flat = masks.view(N, -1)
-                indices = torch.nonzero(mask_flat, as_tuple=False).int()
-                if not indices.any():
-                    indices = torch.zeros((N,2)).to(x.device).int()
-                
-                # Step 2: Extract the valid features using the indices
-                valid_features = x.view(N, C, -1).permute(0, 2, 1)[indices[:, 0], indices[:, 1]]
-                
-                # Step 3: Create the sparse tensor
-                # The coordinates should be in the format (batch_index, z, y, x)
-                coords = torch.cat([indices[:, 0:1], torch.div(indices[:, 1:], W, rounding_mode='floor'), indices[:, 1:] % W], dim=1)
-
-                # Create the sparse tensor
-                x = spconv.SparseConvTensor(features=valid_features, indices=coords, spatial_shape=(H, W), batch_size=N)
-                # print(alpha)
-                # import matplotlib.pyplot as plt
-                # fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(10, 10))
-                # # Generate some data and plot in each subplot
-                # for i in range(4):
-                #     for j in range(4):
-                #         axes[i, j].imshow(masks_features[0,i*4+j].sigmoid().cpu().numpy())
-                #         axes[i, j].set_title(f'channel: {i*4 + j + 1}')
-                # # plt.imshow(masks_features[0,1].cpu().numpy())
-                # plt.tight_layout()
-                # plt.show()
-
-        if self.head is not None:
-            pred_bev = self.head(x)
-            if self.fusion:
-                for k in pred_bev:
-                    x = pred_bev[k]
-                    masks_features = x * masks
-                    alpha = self.fusion
-                    x = alpha * masks_features + (1 - alpha) * x
-                    pred_bev[k] = x
-                pred_bev['mask'] = masks.bool()
-
-            elif self.sparse:
-                for k in pred_bev:
-                    if isinstance(pred_bev[k], spconv.SparseConvTensor):
-                        pred_bev[k] = pred_bev[k].dense()
-                pred_bev['mask'] = masks.bool()
-            
-            output.update(pred_bev)
+        x, height = self.encoder(features, lidar2img)
+        x = self.decoder(x)
+        output = self.head(x)
+        output['height'] = height.squeeze(1) # squeeze group dimension
 
         return output
-
-    def get_mask(self, pred):
-        pred_boxes = pred['pred_boxes'].clone()
-
-        # filter with topk candidates region
-        pred_logits = pred['pred_logits'].clone()
-        scores, _ = pred_logits.softmax(-1)[..., :-1].max(-1)
-        scores, filter_idx = torch.topk(scores, k=300, dim=-1)
-
-        # Expand dimensions for filter_idx for matching with pred_boxes_coords
-        filter_idx_expand = filter_idx.unsqueeze(-1).expand(*filter_idx.shape, pred_boxes.shape[-1])
-        pred_boxes = torch.gather(pred_boxes, 1, filter_idx_expand)
-
-        # project box from lidar to bev
-        b, N = pred_boxes.shape[:2]
-        device = pred_boxes.device
-
-        pred_boxes = pred_boxes * 200
-        pred_boxes_coords = box_cxcywh_to_xyxy(pred_boxes, transform=False)
-
-        # pad with box
-        yy, xx = torch.meshgrid(torch.arange(200, device=device), torch.arange(200, device=device))
-
-        # Expand dimensions for xx and yy to match the dimensions of box
-        # xx = xx[None, None, ...]
-        # yy = yy[None, None, ...]
-        xx = repeat(xx, '... -> b 1 ...', b=b)
-        yy = repeat(yy, '... -> b 1 ...', b=b)
-        masks = []
-        for i in range(b):
-            pred_boxes_coords_batch = pred_boxes_coords[i]
-            pred_boxes_coords_batch = pred_boxes_coords_batch[scores[i] > self.threshold]
-            # Check if the coordinates are inside the boxes
-            mask_batch = (xx[i] >= pred_boxes_coords_batch[:, 0, None, None]) & (xx[i] <= pred_boxes_coords_batch[:, 2, None, None]) & \
-                    (yy[i] >= pred_boxes_coords_batch[:, 1, None, None]) & (yy[i] <= pred_boxes_coords_batch[:, 3, None, None]) # N h w
-            
-            # Combine the masks for different boxes using logical OR
-            mask_batch = mask_batch.any(dim=0) # h w
-            masks.append(mask_batch)
-
-        return torch.stack(masks).unsqueeze(1).float()
     
 class SegHead(nn.Module):
     """
@@ -219,7 +113,7 @@ class SegHead(nn.Module):
         self.register_buffer('grid', ref_3d, persistent=False) # z h w 3
         self.h = H
         self.w = W
-        self.bev_query = nn.Embedding(50 * 50, self.embed_dims * 4)
+        self.bev_query = nn.Embedding(50 * 50, self.embed_dims * 4) # nn.Embedding(200 * 200, self.embed_dims)
 
     def forward(self, mlvl_feats, lidar2img):
         
@@ -231,7 +125,7 @@ class SegHead(nn.Module):
         # bev_pos = rearrange(self.grid, 'z h w d -> d h w', h=self.h, w=self.w)
         bev_pos = repeat(self.grid, '... -> b ...', b=bs)
         
-        bev = self.transformer(
+        bev, height = self.transformer(
             mlvl_feats, 
             lidar2img,
             bev_query, 
@@ -240,7 +134,7 @@ class SegHead(nn.Module):
         )
 
         # bev = rearrange(bev, 'b (h w) d -> b d h w', h=self.h, w=self.w)
-        return bev
+        return bev, height
     
 class SegTransformerDecoder(nn.Module):
     """Implements the decoder in DETR3D transformer.
@@ -250,7 +144,7 @@ class SegTransformerDecoder(nn.Module):
             `LN`.
     """
 
-    def __init__(self, embed_dims, num_points=4, num_groups=1, num_layers=[1], num_levels=4, pc_range=[], h=0, w=0, scales=[1.0], up_scales=[2], **kwargs):
+    def __init__(self, embed_dims, num_points=4, num_groups=1, num_layers=[1], num_levels=4, pc_range=[], h=0, w=0, scales=[1.0], up_scales=[], **kwargs):
         super().__init__()
 
         assert len(num_layers) == len(scales)
@@ -300,7 +194,7 @@ class SegTransformerDecoder(nn.Module):
             mlvl_feats[lvl] = feat.contiguous()
         
         for lid in range(len(self.num_layers)):
-            bev_query = self.layer[lid](
+            bev_query, height = self.layer[lid](
                 mlvl_feats, 
                 lidar2img,
                 bev_query, 
@@ -311,7 +205,7 @@ class SegTransformerDecoder(nn.Module):
             if lid < len(self.decoder):
                 bev_query = self.decoder[lid](bev_query, bev_query) # self.decoder[lid](bev_query, bev_query)
 
-        return bev_query
+        return bev_query, height
 
 class SegTransformerDecoderLayer(nn.Module):
     def __init__(self, embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding):
@@ -388,7 +282,7 @@ class SegTransformerDecoderLayer(nn.Module):
         bev_query = bev_query + self.in_conv(bev_query)
         bev_query = self.norm1(bev_query)
 
-        sampled_feat = self.sampling(
+        sampled_feat, height = self.sampling(
             bev_query,
             mlvl_feats,
             bev_pos,
@@ -405,7 +299,8 @@ class SegTransformerDecoderLayer(nn.Module):
         bev_query = bev_query + self.out_conv(bev_query)
         bev_query = self.norm3(bev_query)
 
-        return bev_query
+        height = rearrange(height, 'b (h w) g p -> b g p h w', h=h, w=w)
+        return bev_query, height
     
 class SegSampling(nn.Module):
     """Adaptive Spatio-temporal Sampling"""
@@ -419,13 +314,17 @@ class SegSampling(nn.Module):
         self.img_w = w
         self.pc_range = pc_range
 
-        self.sampling_offset = nn.Conv2d(embed_dims, num_groups * num_points * 3, 1)
+        self.sampling_offset = nn.Sequential(
+            nn.Conv2d(embed_dims, embed_dims, 1),
+            nn.ReLU(),
+            nn.Conv2d(embed_dims, num_groups * num_points * 3, 1),
+        )
         self.scale_weights = nn.Conv2d(embed_dims, num_groups * num_points * num_levels, 1) if num_levels!= 1 else None
         self.eps = eps
 
     def init_weights(self):
-        bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
-        nn.init.zeros_(self.sampling_offset.weight)
+        bias = self.sampling_offset[-1].bias.data.view(self.num_groups * self.num_points, 3)
+        nn.init.zeros_(self.sampling_offset[-1].weight)
         nn.init.uniform_(bias[:, 0:3], -4.0, 4.0)
 
     def forward(self, query, mlvl_feats, reference_points, lidar2img, pos_encoder=None, scale=1.0, mode='grid'):
@@ -497,4 +396,4 @@ class SegSampling(nn.Module):
             reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2]) 
             sampled_feats = sampled_feats + pos_encoder(reference_points)
 
-        return sampled_feats
+        return sampled_feats, sampling_offset[..., -1]

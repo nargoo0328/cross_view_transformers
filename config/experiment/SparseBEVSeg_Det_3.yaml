@@ -17,7 +17,5 @@ data:
   split_intrin_extrin: False
   augment_img: True
   augment_bev: True
-  
-# model:
-#   box_only: True
+
 val_only: False

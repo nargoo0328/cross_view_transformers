@@ -545,6 +545,9 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         coords = np.stack(np.meshgrid(np.arange(200), np.arange(200)), -1).astype(np.float32)
         sigma = 1
 
+        # height
+        height = np.zeros((200, 200), dtype=np.float32)
+
         # box
         tmp = []
         # lidar2img @ bev_augm @ pts
@@ -569,18 +572,24 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             points = (V @ points)[:2]
             cv2.fillPoly(bev[int(box_data[-1])], [points.round().astype(np.int32).T], 1, INTERPOLATION)
 
-            homog_points = np.ones((4, 1))
-            homog_points[:3, :] = center
-            homog_points[-1, :] = 1
-            center = self._prepare_augmented_boxes(bev_augm, homog_points)
-            center[2] = 1 # add 1 for next matrix matmul
-            center = (V @ center)[:2, 0] # squeeze 1
+            # ignore pedestrians
+            if int(box_data[-1]) != 5: 
+                # center, offsets, height
+                homog_points = np.ones((4, 1))
+                homog_points[:3, :] = center
+                homog_points[-1, :] = 1
+                center = self._prepare_augmented_boxes(bev_augm, homog_points)
+                center[2] = 1 # add 1 for next matrix matmul
+                center = (V @ center)[:2, 0] # squeeze 1
 
-            buf.fill(0)
-            cv2.fillPoly(buf, [points.round().astype(np.int32).T], 1, INTERPOLATION)
-            mask = buf > 0
-            center_offset[mask] = center[None] - coords[mask]
-            center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
+                buf.fill(0)
+                cv2.fillPoly(buf, [points.round().astype(np.int32).T], 1, INTERPOLATION)
+                mask = buf > 0
+                center_offset[mask] = center[None] - coords[mask]
+                center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
+                
+                # height
+                cv2.fillPoly(height, [points.round().astype(np.int32).T], box.center[-1], INTERPOLATION)
 
             x1 = np.min(points[0])
             x2 = np.max(points[0])
@@ -592,10 +601,13 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         bev = self.to_tensor(255 * bev.transpose(1,2,0))
         center_score = self.to_tensor(center_score)
         center_offset = self.to_tensor(center_offset)
+
+        # height
+        height = self.to_tensor(height)
         tmp = np.array(tmp)
 
         if len(tmp) == 0:
-            return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}
+            return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}, height
 
         boxes = np.zeros((len(tmp), 4))
         labels = tmp[:,4].astype(np.int_)
@@ -608,7 +620,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         # normalized
         boxes = boxes / 200.0
         
-        return bev, center_score, center_offset, {'labels':labels, 'boxes':boxes.astype(np.float32)}
+        return bev, center_score, center_offset, {'labels':labels, 'boxes':boxes.astype(np.float32)}, height
     
     def _parse_bev_augm(self, result, bev_augm):
         box_cxcy = result['boxes'][:,:2] # N 2
@@ -700,11 +712,14 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         if self.augment_bev is not None:
             bev_augm = self.augment_bev()
-            augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d = self.get_bev_from_gtbbox(batch, bev_augm)
+            augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d, height = self.get_bev_from_gtbbox(batch, bev_augm)
 
             result['bev'][4:12] = augm_bev_gt
             result['center'] = augm_center_score
             result['offset'] = augm_center_offset
+
+            result['height'] = height
+
             if self.box == 'pseudo':
                 result.update(self.get_bbox_from_bev(result['bev'], result['view']))
             elif self.box == 'gt':

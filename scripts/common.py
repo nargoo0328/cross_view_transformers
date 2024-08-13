@@ -33,7 +33,7 @@ def prepare_val(cfg,device,CHECKPOINT_PATH=None,batch_size=1,mode='split'):
     if CHECKPOINT_PATH is not None:
         try:
         # if Path(CHECKPOINT_PATH).exists():
-            network = load_backbone(CHECKPOINT_PATH,device=device)
+            network = load_backbone(CHECKPOINT_PATH, device=device, backbone=model.backbone)
             print("Loaded checkpoint.")
         except:
         # else:

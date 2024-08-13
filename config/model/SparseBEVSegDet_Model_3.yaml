@@ -82,3 +82,4 @@ head:
     VEHICLE: [0, 1]
     center: [1, 2]
     offset: [2, 4]
+    # height: [4, 5]

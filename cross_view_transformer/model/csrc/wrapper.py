@@ -147,8 +147,9 @@ class MSMVSamplingC23456(torch.autograd.Function):
 
 
 def msmv_sampling(mlvl_feats, sampling_locations, scale_weights):
-    
-    if len(mlvl_feats) == 1 and MSMV_CUDA:
+    if not sampling_locations.is_cuda:
+        return msmv_sampling_pytorch(mlvl_feats, sampling_locations, scale_weights)
+    elif len(mlvl_feats) == 1 and MSMV_CUDA:
         return MSMVSamplingC2.apply(*mlvl_feats, sampling_locations, scale_weights)
     elif len(mlvl_feats) == 2 and MSMV_CUDA:
         return MSMVSamplingC23.apply(*mlvl_feats, sampling_locations, scale_weights)
@@ -158,5 +159,3 @@ def msmv_sampling(mlvl_feats, sampling_locations, scale_weights):
         return MSMVSamplingC2345.apply(*mlvl_feats, sampling_locations, scale_weights)
     elif len(mlvl_feats) == 5 and MSMV_CUDA:
         return MSMVSamplingC23456.apply(*mlvl_feats, sampling_locations, scale_weights)
-    else:
-        return msmv_sampling_pytorch(mlvl_feats, sampling_locations, scale_weights)
