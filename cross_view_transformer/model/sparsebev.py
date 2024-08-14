@@ -1171,7 +1171,7 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
     # index the only one sampling point and its valid flag
     sample_points_cam = sample_points_cam[i_batch, i_query, i_point, i_view, :]  # [B, Q, GP, 1, 2]
     # if Q == 40000:
-    #     index = 30*200 + 97
+    #     index = 52*200 + 90
     #     print(i_view[0, index])
     #     print(sample_points_cam[0,index])
     valid_mask = valid_mask[i_batch, i_query, i_point, i_view]  # [B, Q, GP, 1]

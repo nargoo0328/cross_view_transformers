@@ -127,13 +127,13 @@ class SimpleBEVDecoderLayer(nn.Module):
                 bev_pos,
                 scale=1.0
             ):
-        h, w = bev_pos.shape[2:4]
         if scale != 1.0:
             b, z = bev_pos.shape[:2]
             bev_pos = rearrange(bev_pos, 'b z h w d -> (b z) d h w')
             bev_pos = F.interpolate(bev_pos, scale_factor= 1 / scale, mode='bilinear')
             bev_pos = rearrange(bev_pos, '(b z) d h w -> b z h w d', b=b, z=z)
 
+        h, w = bev_pos.shape[2:4]
         sampled_feat = self.sampling(
             mlvl_feats,
             bev_pos,

@@ -54,10 +54,10 @@ class SparseBEVSeg(nn.Module):
             features = self.neck(features)
             features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
         
-        x = self.encoder(features, lidar2img)
+        x, height = self.encoder(features, lidar2img)
         x = self.decoder(x)
         output = self.head(x)
-        # output['height'] = height.squeeze(1) # squeeze group dimension
+        output['height'] = height.squeeze(1) # squeeze group dimension
 
         return output
     
@@ -117,7 +117,7 @@ class TwoStageDecoder(nn.Module):
         self.num_groups = num_groups
         self.pc_range = pc_range
         position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
-        self.stage1 = SimpleBEVDecoderLayer(4 * embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding)
+        self.stage1 = SimpleBEVDecoderLayer(4 * embed_dims, num_points, pc_range, h, w, position_encoding)
         self.stage2 = TwoStageDecoderLayer(embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding)
         self.decoder = DecoderBlock(4 * embed_dims, 4 * embed_dims // up_scale, up_scale, 4 * embed_dims, True)
 
@@ -150,11 +150,12 @@ class TwoStageDecoder(nn.Module):
             feat = rearrange(feat, 'b n (g c) h w -> (b g) n h w c',g=G,c=C)
 
             mlvl_feats[lvl] = feat.contiguous()
-        
+
         bev_feats = self.stage1(
                 mlvl_feats, 
                 lidar2img,
                 bev_pos, 
+                scale=4.0,
         )
         bev_feats = self.decoder(bev_feats, bev_feats)
         bev_feats, height = self.stage2(
@@ -220,23 +221,10 @@ class TwoStageDecoderLayer(nn.Module):
             bev_pos: b z h w 3
             bev_query: b d h w
         """
-        # if scale != 1.0:
-        #     if mode == 'grid':
-        #         bev_pos = rearrange(bev_pos, 'b h w d -> b d h w')
-        #         bev_pos = F.interpolate(bev_pos, scale_factor= 1 / scale, mode='bilinear')
-        #         bev_pos = rearrange(bev_pos, 'b d h w -> b h w d')
-        #     elif mode == 'pillar':
-        #         b, z = bev_pos.shape[:2]
-        #         bev_pos = rearrange(bev_pos, 'b z h w d -> (b z) d h w')
-        #         bev_pos = F.interpolate(bev_pos, scale_factor= 1 / scale, mode='bilinear')
-        #         bev_pos = rearrange(bev_pos, '(b z) d h w -> b z h w d', b=b, z=z)
+
         bev_pos = bev_pos.mean(1)
-        print(bev_pos.shape)
         h, w = bev_query.shape[2:]
-        # bev_pos_embed = self.position_encoder(bev_pos[:, 3]) # b h w 2 -> b h w d
-        # # bev_pos_embed = self.position_encoder(bev_pos).mean(1) # b z h w d -> b h w d
-        # bev_pos_embed = rearrange(bev_pos_embed, 'b h w d -> b d h w')
-        # bev_query = bev_query + bev_pos_embed
+
         bev_query = bev_query + self.in_conv(bev_query)
         bev_query = self.norm1(bev_query)
 

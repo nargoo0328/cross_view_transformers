@@ -6,13 +6,13 @@ center:
   # min_visibility: 2
   key: center
 
-offset_weight: 0.01
+offset_weight: 0.1
 offset:
   _target_: cross_view_transformer.losses.SpatialRegressionLoss
 
   norm: 1
   # min_visibility: 2
-  ignore_index: 0.0
+  # ignore_index: 0.0
   key: offset
 
 visible_weight: 1.0
@@ -32,8 +32,9 @@ visible:
 #   norm: 2
 #   key: height
 
-height_weight: 0.01
+height_weight: 0.05
 height:
   _target_: cross_view_transformer.losses.HeightRegressionLoss
 
-  norm: 2
+  norm: 1
+  min_visibility: 2

@@ -9,7 +9,7 @@ from fvcore.nn import sigmoid_focal_loss
 logger = logging.getLogger(__name__)
 
 class SpatialRegressionLoss(torch.nn.Module):
-    def __init__(self, norm, min_visibility=2, ignore_index=None, key=''):
+    def __init__(self, norm, min_visibility=None, ignore_index=None, key=''):
         super(SpatialRegressionLoss, self).__init__()
         # center:2, offset: 1
         self.norm = norm
@@ -58,7 +58,7 @@ class SpatialRegressionLoss(torch.nn.Module):
         return (loss * mask).sum() / (mask.sum() + eps)
 
 class HeightRegressionLoss(torch.nn.Module):
-    def __init__(self, norm, min_visibility=2, key='height', radius=0.5):
+    def __init__(self, norm, min_visibility=None, key='height', radius=0.5):
         super(HeightRegressionLoss, self).__init__()
         # center:2, offset: 1
         self.norm = norm
@@ -90,9 +90,10 @@ class HeightRegressionLoss(torch.nn.Module):
         mask = mask * (target != 0.0)
 
         if self.min_visibility is not None:
-            mask = batch['visibility'] >= self.min_visibility
-            mask = mask[:, None]
-            
+            vis_mask = batch['visibility'] >= self.min_visibility
+            vis_mask = vis_mask[:, None]
+            mask = mask * vis_mask
+
         return (loss * mask).sum() / (mask.sum() + eps)
 
 class SigmoidFocalLoss(torch.nn.Module):
