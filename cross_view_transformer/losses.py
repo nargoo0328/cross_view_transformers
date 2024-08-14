@@ -46,11 +46,9 @@ class SpatialRegressionLoss(torch.nn.Module):
 
         mask = torch.ones_like(loss, dtype=torch.bool)
         if self.min_visibility is not None:
-            mask = batch['visibility'] >= self.min_visibility
-            mask = mask[:, None]
-
-        if pred_mask is not None:
-            mask = mask & pred_mask[:, None]
+            vis_mask = batch['visibility'] >= self.min_visibility
+            vis_mask = vis_mask[:, None]
+            mask = mask * vis_mask
 
         if self.ignore_index is not None:
             mask = mask * (target != self.ignore_index)

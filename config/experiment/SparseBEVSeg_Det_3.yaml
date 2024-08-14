@@ -5,6 +5,7 @@ defaults:
 
   - override /loss: vehicle_loss
   - override /metrics: vehicle_metrics
+  - override /visualization: nuscenes_viz
     
 visualization:
   key: ['VEHICLE']

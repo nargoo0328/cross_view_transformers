@@ -13,7 +13,7 @@ from .transforms import Sample, SaveDataTransform
 import os
 from functools import reduce
 
-STATIC = ['lane', 'road_segment']
+STATIC1 = ['lane', 'road_segment']
 DIVIDER = ['road_divider', 'lane_divider']
 DYNAMIC = [
     'car', 'truck', 'bus',
@@ -25,9 +25,9 @@ DYNAMIC = [
 STATIC2 = ['ped_crossing','walkway','carpark_area']
 topology = True
 if topology:
-    CLASSES = STATIC + DIVIDER + DYNAMIC + STATIC2
+    CLASSES = STATIC1 + DIVIDER + DYNAMIC + STATIC2
 else:
-    CLASSES = STATIC + DIVIDER + DYNAMIC 
+    CLASSES = STATIC1 + DIVIDER + DYNAMIC 
      
 NUM_CLASSES = len(CLASSES)
 
@@ -307,77 +307,6 @@ class NuScenesDataset(torch.utils.data.Dataset):
 
             yield p                                                                     # 3 7
 
-    def convert_to_box_tri(self, sample, annotations,mode_in):
-        # Import here so we don't require nuscenes-devkit unless regenerating labels
-        from nuscenes.utils import data_classes
-
-        def get_view():
-            mode, h, w = mode_in
-            h_meters = 100 if h == 200 else 8
-            w_meters = 100 if w == 200 else 8
-            sh = h / h_meters
-            sw = w / w_meters
-            if mode == 0:
-                return np.float32([
-                [ 0., -sw,          w/2.],
-                [-sh,  0.,          h/2.],
-                [ 0.,  0.,            1.]
-            ])
-            elif mode == 1:
-                return np.float32([
-                [ sw,  0.,          w/2.],
-                [ 0., -sh,          h/2.],
-                [ 0.,  0.,            1.]
-            ])
-            else:
-                return np.float32([
-                [-sw,  0.,          w/2.],
-                [ 0., -sh,          h/2.],
-                [ 0.,  0.,            1.]
-            ])
-
-        M_inv = np.array(sample['pose_inverse'])
-        if mode_in[0] == 0:
-            S = np.array([
-                [1, 0, 0, 0],
-                [0, 1, 0, 0],
-                [0, 0, 0, 1],
-            ])
-        elif mode_in[0] == 1:
-            S = np.array([
-                [1, 0, 0, 0],
-                [0, 0, 1, 0],
-                [0, 0, 0, 1],
-            ])
-        else:
-            S = np.array([
-                [0, 1, 0, 0],
-                [0, 0, 1, 0],
-                [0, 0, 0, 1],
-            ])
-        V = get_view()
-
-        if mode_in[0] == 0:
-            corners_index = [2, 3, 7, 6]
-        elif mode_in[0] == 1:
-            corners_index = [0, 4, 7, 3]
-        else:
-            corners_index = [2, 3, 0, 1]
-
-        for a in annotations:
-            box = data_classes.Box(a['translation'], a['size'], Quaternion(a['rotation']))
-
-            corners = box.corners()[:, corners_index]                                    # 3 4
-            center = corners.mean(-1)                                                   # 3
-            front = (corners[:, 0] + corners[:, 1]) / 2.0                               # 3
-            left = (corners[:, 0] + corners[:, 3]) / 2.0                                # 3
-
-            p = np.concatenate((corners, np.stack((center, front, left), -1)), -1)      # 3 7
-            p = np.pad(p, ((0, 1), (0, 0)), constant_values=1.0)                        # 4 7
-            p = V @ S @ M_inv @ p                                                       # 3 7
-
-            yield p
-
     def get_category_index(self, name, categories):
         """
         human.pedestrian.adult
@@ -513,32 +442,6 @@ class NuScenesDataset(torch.utils.data.Dataset):
 
         return 255 * np.stack(result, -1)
 
-    def get_dynamic_layers_triview(self, sample, anns_by_category):
-        # 0: bev, 1: side, 2: front
-        result = []
-        for i in range(3):
-            if i == 0:
-                h, w = 200, 200
-            elif i == 1:
-                h, w = 32, 200
-            else:
-                h, w = 32, 200
-
-            tmp_result = list()
-
-            for anns in anns_by_category:
-                render = np.zeros((h, w), dtype=np.uint8)
-
-                for p in self.convert_to_box_tri(sample, anns,[i,h,w]):
-                    p = p[:2, :4]
-
-                    cv2.fillPoly(render, [p.round().astype(np.int32).T], 1, INTERPOLATION)
-
-                tmp_result.append(render)
-
-            result.append(255 * np.stack(tmp_result, -1))
-        return result
-
     def get_radar(self,sample,use_radar_filters = False):
         from nuscenes.utils.data_classes import RadarPointCloud
         sample_rec = self.nusc.get('sample', sample['token'])
@@ -635,9 +538,9 @@ class NuScenesDataset(torch.utils.data.Dataset):
                 cx, cy, cz = box.center
                 w, l, h = box.wlh
                 yaw = box.orientation.yaw_pitch_roll[0]
-                gt_boxes.append(np.array([cx, cy, l, w, cz, h, yaw, class_index]))
+                gt_boxes.append(np.array([cx, cy, l, w, cz, h, yaw, class_index, int(ann['visibility_token'])]))
         
-        gt_boxes = np.stack(gt_boxes,0) if len(gt_boxes) != 0 else np.zeros((0,8))
+        gt_boxes = np.stack(gt_boxes, 0) if len(gt_boxes) != 0 else np.zeros((0,9))
         return gt_boxes
             
     def __len__(self):
@@ -651,17 +554,13 @@ class NuScenesDataset(torch.utils.data.Dataset):
         anns_vehicle = self.get_annotations_by_category(sample, ['vehicle'])[0]
         anns_ped = self.get_annotations_by_category(sample, ['pedestrian'])[0]
 
-        static = self.get_static_layers(sample, STATIC)                             # 200 200 2
+        static = self.get_static_layers(sample, STATIC1)                             # 200 200 2
         dividers = self.get_line_layers(sample, DIVIDER)                            # 200 200 2
-        # dynamic = self.get_dynamic_layers(sample, anns_dynamic)                     # 200 200 8
-        if self.tri_view:
-            dynamic = self.get_dynamic_layers_triview(sample, anns_dynamic) 
-        else:
-            dynamic = self.get_dynamic_layers(sample, anns_dynamic)
+        dynamic = self.get_dynamic_layers(sample, anns_dynamic)                     # 200 200 8
         if topology:
-            static_v2 = self.get_static_layers(sample, STATIC2)                             # 200 200 2
+            static2 = self.get_static_layers(sample, STATIC2)                             # 200 200 2
             # dividers_v2 = self.get_line_layers(sample, DIVIDER_v2)     
-            bev = np.concatenate((static, dividers, dynamic,static_v2), -1)                     
+            bev = np.concatenate((static, dividers, dynamic,static2), -1)                     
         else:
             bev = np.concatenate((static, dividers, dynamic[0]), -1)                       # 200 200 12
         assert bev.shape[2] == NUM_CLASSES
@@ -669,15 +568,12 @@ class NuScenesDataset(torch.utils.data.Dataset):
         # Additional labels for vehicles only.
         aux, visibility = self.get_dynamic_objects(sample, anns_vehicle)
         aux_ped, visibility_ped = self.get_dynamic_objects(sample, anns_ped)
+
         radar, lidar, gt_box = None, None, None
         if self.radar:
             radar = self.get_radar(sample)
         if self.lidar:
             lidar = self.get_lidar(sample)
-        if self.tri_view:
-            side, front = dynamic[1:]
-        else:
-            side = front = None
 
         if self.gt_box:
             gt_box = self.get_gt_box(sample['lidar_record'], anns_dynamic)
@@ -692,8 +588,6 @@ class NuScenesDataset(torch.utils.data.Dataset):
             visibility_ped=visibility_ped,
             radar=radar,
             lidar=lidar,
-            side=side,
-            front=front,
             gt_box=gt_box,
             **sample
         )

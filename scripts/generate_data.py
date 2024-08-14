@@ -15,14 +15,14 @@ def setup(cfg):
     cfg.data.dataset = cfg.data.dataset.replace('_generated', '')
     cfg.data.augment = 'none'
     cfg.loader.batch_size = 1
-    cfg.loader.persistent_workers = True
+    cfg.loader.persistent_workers = False
     cfg.loader.drop_last = False
     cfg.loader.shuffle = False
     cfg.loader.__delattr__("train_batch_size")
     cfg.loader.__delattr__("val_batch_size")
 
     # Uncomment to debug errors hidden by multiprocessing
-    # cfg.loader.num_workers = 0
+    # cfg.loader.num_workers = 8
     # cfg.loader.prefetch_factor = 2
     # cfg.loader.persistent_workers = False
 
@@ -66,6 +66,7 @@ def main(cfg):
             info = []
 
             for i, batch in enumerate(tqdm(loader, position=1, leave=False)):
+                # print("total fds:", get_open_fds())
                 info.extend(batch)
                 # Load data from disk to test if it was saved correctly
                 if i == 0 and viz_fn is not None:
@@ -80,6 +81,8 @@ def main(cfg):
             # Write all info for loading to json
             scene_json = labels_dir / f'{episode.scene_name}.json'
             scene_json.write_text(json.dumps(info))
+            # with open(scene_json, "w") as json_file:
+            #     json.dump(info, json_file)
 
 
 if __name__ == '__main__':

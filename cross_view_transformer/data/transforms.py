@@ -52,8 +52,6 @@ class Sample(dict):
         bev,
         radar= None,
         lidar= None,
-        side= None,
-        front= None,
         gt_box= None,
         **kwargs
     ):
@@ -72,8 +70,6 @@ class Sample(dict):
 
         self.radar = radar
         self.lidar = lidar
-        self.side = side
-        self.front = front
         self.gt_box = gt_box
 
     def __getattr__(self, key):
@@ -107,7 +103,8 @@ class SaveDataTransform:
         scene_dir = self.labels_dir / batch.scene
 
         bev_path = f'bev_{batch.token}.png'
-        Image.fromarray(encode(batch.bev)).save(scene_dir / bev_path)
+        with open(scene_dir / bev_path, 'wb') as f:
+            Image.fromarray(encode(batch.bev)).save(f)
 
         result['bev'] = bev_path
 
@@ -127,13 +124,15 @@ class SaveDataTransform:
         # Visibility mask
         if batch.get('visibility') is not None:
             visibility_path = f'visibility_{batch.token}.png'
-            Image.fromarray(batch.visibility).save(scene_dir / visibility_path)
+            with open(scene_dir / visibility_path, 'wb') as f:
+                Image.fromarray(batch.visibility).save(f)
 
             result['visibility'] = visibility_path
 
         if batch.get('visibility_ped') is not None:
             visibility_path = f'visibility_ped_{batch.token}.png'
-            Image.fromarray(batch.visibility_ped).save(scene_dir / visibility_path)
+            with open(scene_dir / visibility_path, 'wb') as f:
+                Image.fromarray(batch.visibility_ped).save(f)
 
             result['visibility_ped'] = visibility_path
 
@@ -156,42 +155,8 @@ class SaveDataTransform:
             gt_box = batch.gt_box
             np.savez_compressed(scene_dir / gt_box_path, gt_box=gt_box)
             result['gt_box'] = gt_box_path
-        
-        if batch.get('side') is not None:
-            side_path = f'side_{batch.token}.png'
-            Image.fromarray(encode(batch.side)).save(scene_dir / side_path)
-
-            result['side'] = side_path
-
-        if batch.get('front') is not None:
-            front_path = f'front_{batch.token}.png'
-            Image.fromarray(encode(batch.front)).save(scene_dir / front_path)
-
-            result['front'] = front_path
 
         return result
-
-    def parse_box(self, batch):
-        scene_dir = self.labels_dir / batch.scene
-        box_path = f'boxes_{batch.token}.npz'
-        result = np.empty((0,5))
-
-        for j in range(8):
-            box_list = get_box_from_bev(batch, j+4, view=True)
-            box_list = np.pad(box_list,[(0,0),(0,1)], mode='constant', constant_values=j)
-            result = np.concatenate((result, box_list),0)
-
-        # vehicle_boxes = np.pad(vehicle_boxes,[(0,0),(0,1)], mode='constant', constant_values=0)
-            
-        # ped_boxes = get_box_from_bev(batch,9, view=True)
-        # ped_boxes = np.pad(ped_boxes,[(0,0),(0,1)], mode='constant', constant_values=1)
-        # result = np.concatenate((vehicle_boxes,ped_boxes),0)
-
-        if len(result) == 0:
-            result = np.array([[0,0,0,0,8]])
-
-        np.savez_compressed(scene_dir / box_path, boxes=result)
-        return {'boxes': box_path}
 
     def __call__(self, batch):
         """
@@ -201,7 +166,7 @@ class SaveDataTransform:
         result.update(self.get_cameras(batch))
         result.update(self.get_bev(batch))
         result.update({k: v for k, v in batch.items() if k not in result})
-        result.update(self.parse_box(batch))
+        # result.update(self.parse_box(batch))
 
         return result
 
@@ -328,22 +293,6 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         result = {
             'bev': bev,
         }
-        # import matplotlib.pyplot as plt
-        # plt.imshow(bev[4])
-        # plt.savefig("/media/hcis-s20/SRL/cross_view_ae/cross_view_transformers/bev.png")
-        if sample.side is not None:
-            side = Image.open(scene_dir / sample.side)
-            side = decode(side, 9)
-            side = (255 * side).astype(np.uint8)
-            side = self.to_tensor(side)
-            result['side'] = side
- 
-        if sample.front is not None:
-            front = Image.open(scene_dir / sample.front)
-            front = decode(front, 9)
-            front = (255 * front).astype(np.uint8)
-            front = self.to_tensor(front)
-            result['front'] = front
 
         if 'visibility' in sample:
             visibility = Image.open(scene_dir / sample.visibility)
@@ -448,7 +397,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             boxes[:,4:] = tmp_boxes[:,4:]
         
         elif self.box == 'gt':
-            det = np.load(scene_dir / sample.gt_box, allow_pickle=True)['gt_box']
+            det = np.load(scene_dir / sample.gt_box, allow_pickle=True)['gt_box'][:, :-1] # ignore visibility
             mask = (det[:, 0] >= -50) & (det[:, 1] >= -50) & (det[:, 0] <= 50) & (det[:, 1] <= 50)
             det = det[mask]
             if self.orientation:
@@ -541,6 +490,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         # center & offset
         center_score = np.zeros((200, 200), dtype=np.float32)
         center_offset = np.zeros((200, 200, 2), dtype=np.float32)
+        visibility = np.full((200, 200), 255, dtype=np.uint8)
+
         buf = np.zeros((200, 200), dtype=np.uint8)
         coords = np.stack(np.meshgrid(np.arange(200), np.arange(200)), -1).astype(np.float32)
         sigma = 1
@@ -559,6 +510,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             size = [box_data[2],box_data[3],box_data[5]]
             yaw = box_data[6]
             yaw = -yaw - np.pi / 2
+            class_idx = int(box_data[7])
+            visibility_token = box_data[8]
             box = Box(translation, size, sincos2quaternion(np.sin(yaw),np.cos(yaw)))
             
             points = box.bottom_corners()
@@ -570,10 +523,10 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             points = self._prepare_augmented_boxes(bev_augm, homog_points)
             points[2] = 1 # add 1 for next matrix matmul
             points = (V @ points)[:2]
-            cv2.fillPoly(bev[int(box_data[-1])], [points.round().astype(np.int32).T], 1, INTERPOLATION)
+            cv2.fillPoly(bev[class_idx], [points.round().astype(np.int32).T], 1, INTERPOLATION)
 
             # ignore pedestrians
-            if int(box_data[-1]) != 5: 
+            if class_idx != 5: 
                 # center, offsets, height
                 homog_points = np.ones((4, 1))
                 homog_points[:3, :] = center
@@ -591,6 +544,9 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
                 # height
                 cv2.fillPoly(height, [points.round().astype(np.int32).T], box.center[-1], INTERPOLATION)
 
+                # visibility
+                visibility[mask] = visibility_token
+
             x1 = np.min(points[0])
             x2 = np.max(points[0])
             y1 = np.min(points[1])
@@ -607,7 +563,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         tmp = np.array(tmp)
 
         if len(tmp) == 0:
-            return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}, height
+            return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}, height, visibility
 
         boxes = np.zeros((len(tmp), 4))
         labels = tmp[:,4].astype(np.int_)
@@ -620,7 +576,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         # normalized
         boxes = boxes / 200.0
         
-        return bev, center_score, center_offset, {'labels':labels, 'boxes':boxes.astype(np.float32)}, height
+        return bev, center_score, center_offset, {'labels':labels, 'boxes':boxes.astype(np.float32)}, height, visibility
     
     def _parse_bev_augm(self, result, bev_augm):
         box_cxcy = result['boxes'][:,:2] # N 2
@@ -690,7 +646,6 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         return {'labels':labels, 'boxes':boxes.astype(np.float32)}
 
     def __call__(self, batch):
-
         if not isinstance(batch, Sample):
             batch = Sample(**batch)
         
@@ -712,12 +667,12 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         if self.augment_bev is not None:
             bev_augm = self.augment_bev()
-            augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d, height = self.get_bev_from_gtbbox(batch, bev_augm)
+            augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d, height, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
 
             result['bev'][4:12] = augm_bev_gt
             result['center'] = augm_center_score
             result['offset'] = augm_center_offset
-
+            result['visibility'] = visibility
             result['height'] = height
 
             if self.box == 'pseudo':

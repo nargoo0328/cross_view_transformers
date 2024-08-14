@@ -37,4 +37,4 @@ height:
   _target_: cross_view_transformer.losses.HeightRegressionLoss
 
   norm: 1
-  min_visibility: 2
+  # min_visibility: 2
