@@ -80,7 +80,7 @@ class HeightRegressionLoss(torch.nn.Module):
         num_points = prediction.shape[1]
         target = target.expand(-1, num_points, -1, -1) # b 1 h w -> b p h w
         loss = self.loss_fn(prediction, target, reduction='none')
-        loss -= self.radius
+        loss -= self.radius ** self.norm
         loss = torch.clamp(loss, min=0.0)
 
         mask = torch.ones_like(loss, dtype=torch.bool)

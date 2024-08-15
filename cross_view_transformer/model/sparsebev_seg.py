@@ -314,17 +314,18 @@ class SegSampling(nn.Module):
         self.img_w = w
         self.pc_range = pc_range
 
-        self.sampling_offset = nn.Sequential(
-            nn.Conv2d(embed_dims, embed_dims, 1),
-            nn.ReLU(),
-            nn.Conv2d(embed_dims, num_groups * num_points * 3, 1),
-        )
+        # self.sampling_offset = nn.Sequential(
+        #     nn.Conv2d(embed_dims, embed_dims, 1),
+        #     nn.ReLU(),
+        #     nn.Conv2d(embed_dims, num_groups * num_points * 3, 1),
+        # )
+        self.sampling_offset = nn.Conv2d(embed_dims, num_groups * num_points * 3, 1)
         self.scale_weights = nn.Conv2d(embed_dims, num_groups * num_points * num_levels, 1) if num_levels!= 1 else None
         self.eps = eps
 
     def init_weights(self):
-        bias = self.sampling_offset[-1].bias.data.view(self.num_groups * self.num_points, 3)
-        nn.init.zeros_(self.sampling_offset[-1].weight)
+        bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
+        nn.init.zeros_(self.sampling_offset.weight)
         nn.init.uniform_(bias[:, 0:3], -4.0, 4.0)
 
     def forward(self, query, mlvl_feats, reference_points, lidar2img, pos_encoder=None, scale=1.0, mode='grid'):
