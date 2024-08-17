@@ -56,13 +56,14 @@ class SpatialRegressionLoss(torch.nn.Module):
         return (loss * mask).sum() / (mask.sum() + eps)
 
 class HeightRegressionLoss(torch.nn.Module):
-    def __init__(self, norm, min_visibility=None, key='height', radius=0.5):
+    def __init__(self, norm, min_visibility=None, key='height', radius=0.5, ignore_index=None):
         super(HeightRegressionLoss, self).__init__()
         # center:2, offset: 1
         self.norm = norm
         self.min_visibility = min_visibility
         self.key = key
         self.radius = radius
+        self.ignore_index = ignore_index
 
         if norm == 1:
             self.loss_fn = F.l1_loss
@@ -84,8 +85,8 @@ class HeightRegressionLoss(torch.nn.Module):
         loss = torch.clamp(loss, min=0.0)
 
         mask = torch.ones_like(loss, dtype=torch.bool)
-        # only supervised occupied region
-        mask = mask * (target != 0.0)
+        if self.ignore_index is not None:
+            mask = mask * (target != 0.0)
 
         if self.min_visibility is not None:
             vis_mask = batch['visibility'] >= self.min_visibility

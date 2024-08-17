@@ -31,15 +31,15 @@ def prepare_val(cfg,device,CHECKPOINT_PATH=None,batch_size=1,mode='split'):
 
     print("Dataset length:",len(dataset))
     if CHECKPOINT_PATH is not None:
-        try:
+        # try:
         # if Path(CHECKPOINT_PATH).exists():
-            network = load_backbone(CHECKPOINT_PATH, device=device, backbone=model.backbone)
-            print("Loaded checkpoint.")
-        except:
-        # else:
-            print("Checkpoint loading failed.")
-            network = model.backbone
+        network = load_backbone(CHECKPOINT_PATH, device=device, backbone=model.backbone)
+        print("Loaded checkpoint.")
+        # except:
+        # # else:
+        #     print("Checkpoint loading failed.")
         #     network = model.backbone
+        # #     network = model.backbone
     else:
         network = model.backbone
 

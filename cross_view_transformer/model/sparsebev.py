@@ -1101,7 +1101,7 @@ class AdaptiveMixing(nn.Module):
         else:
             return self.inner_forward(x, query)
 
-def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, image_w, eps=1e-5):
+def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, image_w, sampling_offset=None, eps=1e-5):
     """
     Args:
         sample_points: 3D sampling points in shape [B, Q, T, G, P, 3]
@@ -1170,10 +1170,25 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
 
     # index the only one sampling point and its valid flag
     sample_points_cam = sample_points_cam[i_batch, i_query, i_point, i_view, :]  # [B, Q, GP, 1, 2]
+    
+    if sampling_offset is not None:
+        sampling_offset = rearrange(sampling_offset, 'b q g p d -> b q (g p) 1 d')
+        sampling_offset = sampling_offset / torch.tensor(
+                [mlvl_feats[0].shape[-2], mlvl_feats[0].shape[-1]]
+            ).to(sampling_offset.device)[None, None, None, None]
+        sample_points_cam = sample_points_cam + sampling_offset
+
     # if Q == 40000:
-    #     index = 52*200 + 90
+    #     index = 90+52*200
+    #     print("Stage 2")
     #     print(i_view[0, index])
     #     print(sample_points_cam[0,index])
+    # else:
+    #     index = 96//4 + 19 // 4 * 50
+    #     print("Stage 1")
+    #     print(i_view[0, index])
+    #     print(sample_points_cam[0,index])
+
     valid_mask = valid_mask[i_batch, i_query, i_point, i_view]  # [B, Q, GP, 1]
     zero_index = valid_mask[0, ..., 0].sum(1)
     zero_index = torch.nonzero(zero_index==0)

@@ -111,6 +111,7 @@ class SegHead(nn.Module):
             ref_3d = torch.cat([ref_3d, torch.zeros((H, W, 1)) + 0.5], dim=-1)
 
         self.register_buffer('grid', ref_3d, persistent=False) # z h w 3
+
         self.h = H
         self.w = W
         self.bev_query = nn.Embedding(50 * 50, self.embed_dims * 4) # nn.Embedding(200 * 200, self.embed_dims)
@@ -268,6 +269,7 @@ class SegTransformerDecoderLayer(nn.Module):
                 bev_pos = rearrange(bev_pos, 'b h w d -> b d h w')
                 bev_pos = F.interpolate(bev_pos, scale_factor= 1 / scale, mode='bilinear')
                 bev_pos = rearrange(bev_pos, 'b d h w -> b h w d')
+
             elif mode == 'pillar':
                 b, z = bev_pos.shape[:2]
                 bev_pos = rearrange(bev_pos, 'b z h w d -> (b z) d h w')
@@ -319,6 +321,7 @@ class SegSampling(nn.Module):
         #     nn.ReLU(),
         #     nn.Conv2d(embed_dims, num_groups * num_points * 3, 1),
         # )
+        # self.sampling_offset = nn.Conv2d(embed_dims, num_groups * num_points * 3, 1)
         self.sampling_offset = nn.Conv2d(embed_dims, num_groups * num_points * 3, 1)
         self.scale_weights = nn.Conv2d(embed_dims, num_groups * num_points * num_levels, 1) if num_levels!= 1 else None
         self.eps = eps
@@ -327,6 +330,23 @@ class SegSampling(nn.Module):
         bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
         nn.init.zeros_(self.sampling_offset.weight)
         nn.init.uniform_(bias[:, 0:3], -4.0, 4.0)
+
+        # 2d sampling
+        # from torch.nn.init import constant_
+        # constant_(self.sampling_offset.weight.data, 0.0)
+        # thetas = torch.arange(self.num_points, dtype=torch.float32) * (
+        #     2.0 * math.pi / self.num_points
+        # )
+        # grid_init = torch.stack([thetas.cos(), thetas.sin()], -1)
+        # grid_init = (
+        #     (grid_init / grid_init.abs().max(-1, keepdim=True)[0])
+        #     .view(1, self.num_points, 2)
+        #     .repeat(self.num_groups, 1, 1)
+        # )
+        # # for i in range(self.n_points):
+        # #     grid_init[:, :, i, :] *= i + 1
+        # with torch.no_grad():
+        #     self.sampling_offset.bias = nn.Parameter(grid_init.view(-1))
 
     def forward(self, query, mlvl_feats, reference_points, lidar2img, pos_encoder=None, scale=1.0, mode='grid'):
 
@@ -337,34 +357,40 @@ class SegSampling(nn.Module):
                                 g=self.num_groups,
                                 p=self.num_points,
                                 d=3
-                            ).clone()
-            sampling_offset[..., :2] = (sampling_offset[..., :2] * (0.25 * scale + self.eps) * 2) \
+                            )
+            sampling_offset_new = sampling_offset.clone()
+            sampling_offset_new[..., :2] = (sampling_offset_new[..., :2] * (0.25 * scale + self.eps) * 2) \
                                         - (0.25 * scale + self.eps)
-            sampling_offset[..., 2:3] = (sampling_offset[..., 2:3] * (4.0 + self.eps) * 2) \
+            sampling_offset_new[..., 2:3] = (sampling_offset_new[..., 2:3] * (4.0 + self.eps) * 2) \
                                         - (4.0 + self.eps)
-            # sampling_offset = (sampling_offset * (0.25 * scale + self.eps) * 2) \
-            #                             - (0.25 * scale + self.eps)
-            reference_points = rearrange(reference_points, 'b h w d -> b (h w) 1 1 d', d=3).clone()
+            sampling_offset = sampling_offset_new
 
+            reference_points = rearrange(reference_points, 'b h w d -> b (h w) 1 1 d', d=3).clone()
             reference_points[..., 0:1] = (reference_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
             reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
             reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
-
             reference_points = reference_points + sampling_offset
+
+            # if reference_points.shape[1] == 40000:
+            #     index = 96+19*200
+            #     print("Stage 2", reference_points[0, index])
+            # else:
+            #     index = 96//4 + 19 // 4 * 50
+            #     print("Stage 1", reference_points[0, index])
+
         # 3d sampling offset 
         elif mode == 'pillar':
-            num_points_pillar = reference_points.shape[1]
-            sampling_offset = self.sampling_offset(query).sigmoid() # b (g p 3) h w
-            sampling_offset = rearrange(sampling_offset, 'b (g p1 p2 d) h w -> b (h w) g p1 p2 d',
+
+            sampling_offset = self.sampling_offset(query) # b (g p 3) h w
+            sampling_offset = rearrange(sampling_offset, 'b (g p d) h w -> b (h w) g p d',
                                 g=self.num_groups,
-                                p1=num_points_pillar,
-                                p2=self.num_points//num_points_pillar,
-                                d=3
-                            ).clone()
-            sampling_offset[..., :2] = (sampling_offset[..., :2] * (0.25 * scale + self.eps) * 2) \
-                                        - (0.25 * scale + self.eps)
-            sampling_offset[..., 2:3] = (sampling_offset[..., 2:3] * (0.5 + self.eps) * 2) \
-                                        - (0.5 + self.eps)
+                                p=self.num_points,
+                                d=2
+                            )
+            # sampling_offset[..., :2] = (sampling_offset[..., :2] * (0.25 * scale + self.eps) * 2) \
+            #                             - (0.25 * scale + self.eps)
+            # sampling_offset[..., 2:3] = (sampling_offset[..., 2:3] * (0.5 + self.eps) * 2) \
+            #                             - (0.5 + self.eps)
             
             reference_points = rearrange(reference_points, 'b p1 h w d -> b (h w) 1 p1 1 d').clone()
 
@@ -372,7 +398,7 @@ class SegSampling(nn.Module):
             reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
             reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
 
-            reference_points = reference_points + sampling_offset
+            # reference_points = reference_points + sampling_offset
             reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
 
         if self.scale_weights is not None:
@@ -382,14 +408,17 @@ class SegSampling(nn.Module):
         else:
             # no scale     
             scale_weights = None  
+
         # sampling
         sampled_feats = sampling_4d(
             reference_points,
             mlvl_feats,
             scale_weights,
             lidar2img,
-            self.img_h, self.img_w
+            self.img_h, self.img_w,
+            # sampling_offset,
         )  # [B, Q, G, P, C]
+        
         if pos_encoder is not None:
             # normalized back
             reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
