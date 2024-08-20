@@ -56,7 +56,7 @@ class SpatialRegressionLoss(torch.nn.Module):
         return (loss * mask).sum() / (mask.sum() + eps)
 
 class HeightRegressionLoss(torch.nn.Module):
-    def __init__(self, norm, min_visibility=None, key='height', radius=0.5, ignore_index=None):
+    def __init__(self, norm, min_visibility=None, key='height', radius=0.0, ignore_index=None, pos_weight=1.0):
         super(HeightRegressionLoss, self).__init__()
         # center:2, offset: 1
         self.norm = norm
@@ -64,6 +64,7 @@ class HeightRegressionLoss(torch.nn.Module):
         self.key = key
         self.radius = radius
         self.ignore_index = ignore_index
+        self.pos_weight = pos_weight
 
         if norm == 1:
             self.loss_fn = F.l1_loss
@@ -79,10 +80,20 @@ class HeightRegressionLoss(torch.nn.Module):
         assert len(prediction.shape) == 4, 'Must be a 4D tensor'
 
         num_points = prediction.shape[1]
-        target = target.expand(-1, num_points, -1, -1) # b 1 h w -> b p h w
-        loss = self.loss_fn(prediction, target, reduction='none')
-        loss -= self.radius ** self.norm
-        loss = torch.clamp(loss, min=0.0)
+        target_expand = target.expand(-1, num_points, -1, -1) # b 1 h w -> b p h w
+        loss = self.loss_fn(prediction, target_expand, reduction='none')
+
+        if self.radius > 0:
+            loss_radius = torch.zeros_like(loss) + (self.radius ** self.norm)
+            loss_radius = loss_radius * (target != 0.0)
+            loss -= loss_radius
+            loss = torch.clamp(loss, min=0.0)
+        
+        loss = loss.sum(1)
+        pos_weight = (target != 0.0).float() * self.pos_weight
+        neg_weight = torch.ones_like(loss) * (target == 0.0)
+        weight = pos_weight + neg_weight
+        loss = loss * weight
 
         mask = torch.ones_like(loss, dtype=torch.bool)
         if self.ignore_index is not None:

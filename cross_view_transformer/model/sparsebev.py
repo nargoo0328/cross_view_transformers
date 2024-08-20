@@ -1178,11 +1178,16 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
             ).to(sampling_offset.device)[None, None, None, None]
         sample_points_cam = sample_points_cam + sampling_offset
 
-    # if Q == 40000:
-    #     index = 90+52*200
-    #     print("Stage 2")
-    #     print(i_view[0, index])
-    #     print(sample_points_cam[0,index])
+    if Q == 40000:
+        index = 96+20*200
+        print("Stage 2")
+        print(i_view[0, index])
+        print(sample_points_cam[0,index])
+
+        index = 96+25*200
+        print("Stage 2")
+        print(i_view[0, index])
+        print(sample_points_cam[0,index])
     # else:
     #     index = 96//4 + 19 // 4 * 50
     #     print("Stage 1")

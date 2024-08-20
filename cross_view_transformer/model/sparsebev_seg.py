@@ -66,10 +66,10 @@ class SparseBEVSeg(nn.Module):
             features = self.neck(features)
             features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
         
-        x, height = self.encoder(features, lidar2img)
+        x, center_z, length = self.encoder(features, lidar2img)
         x = self.decoder(x)
         output = self.head(x)
-        output['height'] = height.squeeze(1) # squeeze group dimension
+        # output['height'] = height.squeeze(2).squeeze(2) # squeeze group dimension
 
         return output
     
@@ -126,7 +126,7 @@ class SegHead(nn.Module):
         # bev_pos = rearrange(self.grid, 'z h w d -> d h w', h=self.h, w=self.w)
         bev_pos = repeat(self.grid, '... -> b ...', b=bs)
         
-        bev, height = self.transformer(
+        bev, center_z, length = self.transformer(
             mlvl_feats, 
             lidar2img,
             bev_query, 
@@ -135,7 +135,7 @@ class SegHead(nn.Module):
         )
 
         # bev = rearrange(bev, 'b (h w) d -> b d h w', h=self.h, w=self.w)
-        return bev, height
+        return bev, center_z, length
     
 class SegTransformerDecoder(nn.Module):
     """Implements the decoder in DETR3D transformer.
@@ -195,7 +195,7 @@ class SegTransformerDecoder(nn.Module):
             mlvl_feats[lvl] = feat.contiguous()
         
         for lid in range(len(self.num_layers)):
-            bev_query, height = self.layer[lid](
+            bev_query, center_z, length = self.layer[lid](
                 mlvl_feats, 
                 lidar2img,
                 bev_query, 
@@ -206,7 +206,7 @@ class SegTransformerDecoder(nn.Module):
             if lid < len(self.decoder):
                 bev_query = self.decoder[lid](bev_query, bev_query) # self.decoder[lid](bev_query, bev_query)
 
-        return bev_query, height
+        return bev_query, center_z, length
 
 class SegTransformerDecoderLayer(nn.Module):
     def __init__(self, embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding):
@@ -284,7 +284,7 @@ class SegTransformerDecoderLayer(nn.Module):
         bev_query = bev_query + self.in_conv(bev_query)
         bev_query = self.norm1(bev_query)
 
-        sampled_feat, height = self.sampling(
+        sampled_feat, center_z, length = self.sampling(
             bev_query,
             mlvl_feats,
             bev_pos,
@@ -301,8 +301,7 @@ class SegTransformerDecoderLayer(nn.Module):
         bev_query = bev_query + self.out_conv(bev_query)
         bev_query = self.norm3(bev_query)
 
-        height = rearrange(height, 'b (h w) g p -> b g p h w', h=h, w=w)
-        return bev_query, height
+        return bev_query, center_z, length
     
 class SegSampling(nn.Module):
     """Adaptive Spatio-temporal Sampling"""
@@ -321,15 +320,25 @@ class SegSampling(nn.Module):
         #     nn.ReLU(),
         #     nn.Conv2d(embed_dims, num_groups * num_points * 3, 1),
         # )
-        # self.sampling_offset = nn.Conv2d(embed_dims, num_groups * num_points * 3, 1)
         self.sampling_offset = nn.Conv2d(embed_dims, num_groups * num_points * 3, 1)
+        self.z_pred = nn.Conv2d(embed_dims, 2, 1)
+        # nn.Sequential(
+        #     nn.Conv2d(embed_dims, embed_dims, 1),
+        #     nn.ReLU(),
+        #     nn.Conv2d(embed_dims, 2, 1),
+        # )
         self.scale_weights = nn.Conv2d(embed_dims, num_groups * num_points * num_levels, 1) if num_levels!= 1 else None
         self.eps = eps
 
     def init_weights(self):
+        # original
         bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
         nn.init.zeros_(self.sampling_offset.weight)
         nn.init.uniform_(bias[:, 0:3], -4.0, 4.0)
+
+        # height & length
+        nn.init.zeros_(self.z_pred.weight)
+        self.z_pred.bias.data = torch.tensor([0.0, 2.0]) # 0 ~ 4
 
         # 2d sampling
         # from torch.nn.init import constant_
@@ -352,6 +361,12 @@ class SegSampling(nn.Module):
 
         # 2d sampling offset 
         if mode == 'grid': 
+            pred_z = self.z_pred(query).sigmoid()
+            pred_z = rearrange(pred_z, 'b d h w -> b (h w) 1 1 d')
+            center_z, length = torch.split(pred_z, 1, dim=-1)
+            center_z = center_z * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2]
+            length = length * 4.0
+
             sampling_offset = self.sampling_offset(query).sigmoid() # b (g p 3) h w
             sampling_offset = rearrange(sampling_offset, 'b (g p d) h w -> b (h w) g p d',
                                 g=self.num_groups,
@@ -361,8 +376,9 @@ class SegSampling(nn.Module):
             sampling_offset_new = sampling_offset.clone()
             sampling_offset_new[..., :2] = (sampling_offset_new[..., :2] * (0.25 * scale + self.eps) * 2) \
                                         - (0.25 * scale + self.eps)
-            sampling_offset_new[..., 2:3] = (sampling_offset_new[..., 2:3] * (4.0 + self.eps) * 2) \
-                                        - (4.0 + self.eps)
+            z = (sampling_offset_new[..., 2:3] * (1.0 + self.eps) * 2) \
+                                        - (1.0 + self.eps) # -1 ~ 1
+            sampling_offset_new[..., 2:3] = center_z + length * z
             sampling_offset = sampling_offset_new
 
             reference_points = rearrange(reference_points, 'b h w d -> b (h w) 1 1 d', d=3).clone()
@@ -377,7 +393,7 @@ class SegSampling(nn.Module):
             # else:
             #     index = 96//4 + 19 // 4 * 50
             #     print("Stage 1", reference_points[0, index])
-
+            
         # 3d sampling offset 
         elif mode == 'pillar':
 
@@ -426,4 +442,4 @@ class SegSampling(nn.Module):
             reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2]) 
             sampled_feats = sampled_feats + pos_encoder(reference_points)
 
-        return sampled_feats, sampling_offset[..., -1]
+        return sampled_feats, center_z, length

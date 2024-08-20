@@ -175,7 +175,7 @@ class BaseViz:
         cv2.fillPoly(img, [points.astype(np.int32)[:2].T], color=(164, 0, 0))
         return img
 
-    def visuaulize_pred_v2(self,pred, view, threshold):
+    def visuaulize_pred_v2(self, pred, view, threshold):
         class_num = pred.shape[0]
         pred[pred>threshold]=1
         pred[pred<=threshold]=0
@@ -214,7 +214,7 @@ class BaseViz:
 
     #     return (255 * img).astype(np.uint8)
 
-    def visualize_bev(self, bev, view,scalar=1e-5):
+    def visualize_bev(self, bev, view, scalar=1e-5):
         """
         (c, h, w) torch [0, 1] float
 

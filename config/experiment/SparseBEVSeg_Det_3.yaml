@@ -14,9 +14,10 @@ visualization:
   # box: True
     
 data:
-  # box: pseudo
+  # box: gt
   split_intrin_extrin: False
   augment_img: True
   augment_bev: True
+  # box_3d: True
 
 val_only: False

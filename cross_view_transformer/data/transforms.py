@@ -497,6 +497,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         sigma = 1
 
         # height
+        center_z = np.zeros((200, 200), dtype=np.float32)
         height = np.zeros((200, 200), dtype=np.float32)
 
         # box
@@ -505,12 +506,14 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         for box_data in gt_box:
             if len(box_data) == 0:
                 continue
-
+            class_idx = int(box_data[7])
+            if class_idx == 5: 
+                continue
             translation = [box_data[0],box_data[1],box_data[4]]
             size = [box_data[2],box_data[3],box_data[5]]
             yaw = box_data[6]
             yaw = -yaw - np.pi / 2
-            class_idx = int(box_data[7])
+            # class_idx = int(box_data[7])
             visibility_token = box_data[8]
             box = Box(translation, size, sincos2quaternion(np.sin(yaw),np.cos(yaw)))
             
@@ -542,7 +545,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
                 center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
                 
                 # height
-                cv2.fillPoly(height, [points.round().astype(np.int32).T], box.center[-1], INTERPOLATION)
+                cv2.fillPoly(center_z, [points.round().astype(np.int32).T], box.center[-1], INTERPOLATION)
+                cv2.fillPoly(height, [points.round().astype(np.int32).T], box.wlh[-1], INTERPOLATION)
 
                 # visibility
                 visibility[mask] = visibility_token
@@ -551,7 +555,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             x2 = np.max(points[0])
             y1 = np.min(points[1])
             y2 = np.max(points[1])
-            tmp.append([x1, y1, x2, y2, int(box_data[-1])])
+            tmp.append([x1, y1, x2, y2, int(box_data[-1]), box.wlh[-1]])
             # TODO: add offset & centerness
         
         bev = self.to_tensor(255 * bev.transpose(1,2,0))
@@ -559,13 +563,14 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         center_offset = self.to_tensor(center_offset)
 
         # height
+        center_z = self.to_tensor(center_z)
         height = self.to_tensor(height)
         tmp = np.array(tmp)
 
         if len(tmp) == 0:
-            return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}, height, visibility
+            return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}, height, center_z, visibility
 
-        boxes = np.zeros((len(tmp), 4))
+        boxes = np.zeros((len(tmp), 5))
         labels = tmp[:,4].astype(np.int_)
 
         boxes[:,0] = (tmp[:, 0] + tmp[:,2]) / 2.0
@@ -575,8 +580,9 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         # normalized
         boxes = boxes / 200.0
+        boxes[:, 4] = tmp[:, -1]
         
-        return bev, center_score, center_offset, {'labels':labels, 'boxes':boxes.astype(np.float32)}, height, visibility
+        return bev, center_score, center_offset, {'labels':labels, 'boxes':boxes.astype(np.float32)}, height, center_z, visibility
     
     def _parse_bev_augm(self, result, bev_augm):
         box_cxcy = result['boxes'][:,:2] # N 2
@@ -667,13 +673,14 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         if self.augment_bev is not None:
             bev_augm = self.augment_bev()
-            augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d, height, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
+            augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d, height, center_z, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
 
             result['bev'][4:12] = augm_bev_gt
             result['center'] = augm_center_score
             result['offset'] = augm_center_offset
             result['visibility'] = visibility
             result['height'] = height
+            result['center_z'] = center_z
 
             if self.box == 'pseudo':
                 result.update(self.get_bbox_from_bev(result['bev'], result['view']))
