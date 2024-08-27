@@ -101,7 +101,7 @@ class SimpleBEVDecoder(nn.Module):
                 bev_pos, 
         )
 
-        return bev_feats
+        return bev_feats, None, None
 
 class SimpleBEVDecoderLayer(nn.Module):
     def __init__(self, embed_dims, num_points, pc_range, h, w, position_encoder=None):
@@ -114,10 +114,12 @@ class SimpleBEVDecoderLayer(nn.Module):
         self.position_encoder = position_encoder if position_encoder is not None else PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
         self.mid_conv = nn.Sequential(
             nn.Conv2d(num_points * 128, embed_dims * 4, 1),
-            nn.GELU(),
-            nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
+            nn.InstanceNorm2d(embed_dims * 4),
             nn.GELU(),
             nn.Conv2d(embed_dims * 4, embed_dims, 1),
+            nn.InstanceNorm2d(embed_dims),
+            nn.GELU(),
+            nn.Conv2d(embed_dims, embed_dims, 1),
         )
         self.sampling = SimpleBEVSampling(pc_range=pc_range, h=h, w=w)
 

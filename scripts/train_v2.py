@@ -39,7 +39,8 @@ def maybe_resume_training(experiment):
 def main(cfg):
     torch.set_float32_matmul_precision('high')
     setup_config(cfg)
-    pl.seed_everything(cfg.experiment.seed, workers=True)
+    if cfg.experiment.get("seed"):
+        pl.seed_everything(cfg.experiment.seed, workers=True)
     Path(cfg.experiment.save_dir).mkdir(exist_ok=True, parents=False)
 
     # Create and load model/data

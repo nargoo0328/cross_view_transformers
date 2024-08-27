@@ -41,13 +41,16 @@ encoder:
   W: 200
   Z: 8
   num_points_in_pillar: 8
+  mode: grid
 
   transformer:
     _target_: cross_view_transformer.model.sparsebev_seg.SegTransformerDecoder
     
-    num_layers: 2
+    num_layers: [1]
+    scales: [1.0]
+    # up_scales: [4]
     num_groups: 1
-    pc_range: [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+    pc_range: [-50.0, -50.0, -4.0, 50.0, 50.0, 4.0] # [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
 
     embed_dims: ${model.encoder.embed_dims}
     num_levels: 1
@@ -57,14 +60,13 @@ encoder:
 
 decoder:
   _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-  in_channels: 128
+  in_channels: ${model.encoder.embed_dims}
 
 head:
   _target_: cross_view_transformer.model.decoder.SegHead
 
-  dim_last: 128
+  dim_last: ${model.encoder.embed_dims}
   multi_head: True
-
   # decoder:
     # _target_: cross_view_transformer.model.decoder.BEVDecoder
 
@@ -78,9 +80,6 @@ head:
 
   outputs:
     VEHICLE: [0, 1]
-    PED: [1, 2]
-    STATIC: [2, 3]
-    DIVIDER: [3, 4]
-    CROSSING: [4, 5]
-    WALKWAY: [5, 6]
-    CARPARK: [6, 7]
+    center: [1, 2]
+    offset: [2, 4]
+    # height: [4, 5]

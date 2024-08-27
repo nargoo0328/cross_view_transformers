@@ -181,17 +181,19 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
         alpha=-1.0,
         gamma=2.0,
         key='bev',
+        aux_weight=0.01,
     ):
         super().__init__(alpha=alpha, gamma=gamma, reduction='none')
         
         self.label_indices = label_indices
         self.min_visibility = min_visibility
         self.key = key
+        self.aux_weight = aux_weight
 
-    def forward(self, pred, batch):
-        if isinstance(pred, dict):            
-            pred_mask = pred['mask'] if 'mask' in pred else None
-            pred = pred[self.key]
+    def forward(self, pred_dict, batch):
+        if isinstance(pred_dict, dict):            
+            # pred_mask = pred_dict['mask'] if 'mask' in pred else None
+            pred = pred_dict[self.key]
 
         label = batch['bev']
 
@@ -208,15 +210,27 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
                 mask = batch['visibility'] >= self.min_visibility
 
             mask = mask[:, None]
-            if pred_mask is not None:
-                mask = mask & pred_mask
+            # if pred_mask is not None:
+            #     mask = mask & pred_mask
             loss = loss[mask]
 
-        elif pred_mask is not None:
-            loss = loss[pred_mask]
-            loss = torch.nan_to_num(loss)
+        # elif pred_mask is not None:
+        #     loss = loss[pred_mask]
+        #     loss = torch.nan_to_num(loss)
 
-        return loss.mean()
+        loss = loss.mean()
+
+        if 'aux' in pred_dict:
+            for aux_pred in pred_dict['aux']:
+                aux_pred = aux_pred[self.key]
+                aux_loss = super().forward(aux_pred, label)
+
+                if self.min_visibility is not None:
+                    aux_loss = aux_loss[mask]
+
+                loss += aux_loss.mean() * self.aux_weight
+
+        return loss
     
 class CenterLoss(SigmoidFocalLoss):
     def __init__(

@@ -57,7 +57,6 @@ class BaseIoUMetric(Metric):
 
     def update(self, pred, label):
         label = label.detach().bool().reshape(-1)
-
         pred = pred[:, None] >= self.thresholds[None]
         label = label[:, None]
         self.tp += (pred & label).sum(0)

@@ -1178,25 +1178,24 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
             ).to(sampling_offset.device)[None, None, None, None]
         sample_points_cam = sample_points_cam + sampling_offset
 
-    if Q == 40000:
-        index = 96+20*200
-        print("Stage 2")
-        print(i_view[0, index])
-        print(sample_points_cam[0,index])
+    valid_mask = valid_mask[i_batch, i_query, i_point, i_view]  # [B, Q, GP, 1]
 
-        index = 96+25*200
-        print("Stage 2")
-        print(i_view[0, index])
-        print(sample_points_cam[0,index])
-    # else:
-    #     index = 96//4 + 19 // 4 * 50
-    #     print("Stage 1")
+    # if Q == 40000:
+    #     y = 62
+    #     x = 130
+    #     index = x + y * 200
     #     print(i_view[0, index])
     #     print(sample_points_cam[0,index])
 
-    valid_mask = valid_mask[i_batch, i_query, i_point, i_view]  # [B, Q, GP, 1]
-    zero_index = valid_mask[0, ..., 0].sum(1)
-    zero_index = torch.nonzero(zero_index==0)
+    #     # y = 4
+    #     x = 133
+    #     index = x + y * 200
+    #     print(i_view[0, index])
+    #     print(sample_points_cam[0,index])
+    #     x = 136
+    #     index = x + y * 200
+    #     print(i_view[0, index])
+    #     print(sample_points_cam[0,index])
 
     # treat the view index as a new axis for grid_sample and normalize the view index to [0, 1]
     sample_points_cam = torch.cat([sample_points_cam, i_view[..., None].float() / (N - 1)], dim=-1)
@@ -1208,10 +1207,12 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
 
     # reorganize the tensor to stack T and G to the batch dim for better parallelism
     if scale_weights is not None:
+        assert scale_weights.shape[-1] == L
         if scale_weights.ndim != 4:
             scale_weights = scale_weights.reshape(B, Q, G, P, -1)
             scale_weights = scale_weights.permute(0, 2, 1, 3, 4)
             scale_weights = scale_weights.reshape(B*G, Q, P, -1)
+            
     else:
         scale_weights = torch.ones((B*G, Q, P, L)).to(sample_points.device)
         # scale_weights[..., 2] = scale_weights[..., 2] + 1.0
@@ -1219,13 +1220,12 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
 
     # multi-scale multi-view grid sample
     final = msmv_sampling(mlvl_feats, sample_points_cam.contiguous(), scale_weights.contiguous())
-
     # reorganize the sampled features
     C = final.shape[2]  # [BG, Q, C, P]
     final = final.reshape(B, G, Q, C, P)
     final = final.permute(0, 2, 1, 4, 3) # [B, Q, G, P, C]
 
-    return final
+    return final, sample_points_cam[..., :2]
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""

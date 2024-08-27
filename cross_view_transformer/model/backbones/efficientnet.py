@@ -197,15 +197,16 @@ class Encoder_eff(nn.Module):
         return x
     
 class EfficientNet_PointBEV(nn.Module):
-    def __init__(self, image_height, image_width, version="b4", checkpoint=False):
+    def __init__(self, image_height, image_width, return_list=["reduction_3", "reduction_4"], version="b4", checkpoint=False):
         super().__init__()
 
         self.version = version
         self.checkpoint = checkpoint
+        self.return_list = return_list
         self._init_efficientnet(version)
 
         dummy = torch.rand(1, 3, image_height, image_width)
-        output_shapes = [x.shape for x in self(dummy)]
+        output_shapes = [x.shape for x in self(dummy, True)]
 
         self.output_shapes = output_shapes
         
@@ -258,10 +259,11 @@ class EfficientNet_PointBEV(nn.Module):
         # Head
         endpoints[f"reduction_{len(endpoints)+1}"] = x
 
-        if not return_all:
-            list_keys = ["reduction_3", "reduction_4"]
-        else:
-            list_keys = list(endpoints.keys())
+        # if not return_all:
+        #     list_keys = ["reduction_3", "reduction_4"]
+        # else:
+        #     list_keys = list(endpoints.keys())
+        list_keys = self.return_list
 
         return [endpoints[k] for k in list_keys]
 

@@ -57,6 +57,10 @@ class TimmBackbone(nn.Module):
         """
         super().__init__()
         self.model = timm.create_model(model_name, features_only=True, pretrained=True, out_indices=out_indices)
+        if model_name == 'efficientnet_b4':
+            if out_indices[-1] == 3:
+                del self.model.blocks[6]
+                del self.model.blocks[5]
         
         dummy = torch.rand(1, 3, image_height, image_width)
         output_shapes = [x.shape for x in self.model(dummy)]

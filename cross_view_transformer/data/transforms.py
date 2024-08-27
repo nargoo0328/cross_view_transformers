@@ -102,11 +102,12 @@ class SaveDataTransform:
 
         scene_dir = self.labels_dir / batch.scene
 
-        bev_path = f'bev_{batch.token}.png'
-        with open(scene_dir / bev_path, 'wb') as f:
-            Image.fromarray(encode(batch.bev)).save(f)
+        if batch.get('bev') is not None:
+            bev_path = f'bev_{batch.token}.png'
+            with open(scene_dir / bev_path, 'wb') as f:
+                Image.fromarray(encode(batch.bev)).save(f)
 
-        result['bev'] = bev_path
+            result['bev'] = bev_path
 
         # Auxilliary labels
         if batch.get('aux') is not None:
@@ -485,7 +486,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         V = sample.view
 
         # bev segmentation
-        bev = np.zeros((8, 200, 200), dtype=np.uint8)
+        bev = np.zeros((9, 200, 200), dtype=np.uint8)
 
         # center & offset
         center_score = np.zeros((200, 200), dtype=np.float32)
@@ -494,7 +495,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         buf = np.zeros((200, 200), dtype=np.uint8)
         coords = np.stack(np.meshgrid(np.arange(200), np.arange(200)), -1).astype(np.float32)
-        sigma = 1
+        sigma = 3
 
         # height
         center_z = np.zeros((200, 200), dtype=np.float32)
@@ -518,6 +519,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             box = Box(translation, size, sincos2quaternion(np.sin(yaw),np.cos(yaw)))
             
             points = box.bottom_corners()
+            if (points[0, :] > 50.0).all() or (points[0, :] < -50.0).all() or (points[1, :] > 50.0).all() or (points[1, :] < -50.0).all():
+                continue
             center = points.mean(-1)[:, None] # unsqueeze 1
 
             homog_points = np.ones((4, 4))
@@ -534,15 +537,19 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
                 homog_points = np.ones((4, 1))
                 homog_points[:3, :] = center
                 homog_points[-1, :] = 1
-                center = self._prepare_augmented_boxes(bev_augm, homog_points)
+                center = self._prepare_augmented_boxes(bev_augm, homog_points).astype(np.float32)
                 center[2] = 1 # add 1 for next matrix matmul
-                center = (V @ center)[:2, 0] # squeeze 1
+                center = (V @ center)[:2, 0].astype(np.float32) # squeeze 1
 
                 buf.fill(0)
                 cv2.fillPoly(buf, [points.round().astype(np.int32).T], 1, INTERPOLATION)
                 mask = buf > 0
-                center_offset[mask] = center[None] - coords[mask]
-                center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
+                # center_offset[mask] = center[None] - coords[mask]
+                center_off = center[None] - coords
+                center_offset[mask] = center_off[mask]
+                g = np.exp(-(center_off ** 2).sum(-1) / (2 * sigma ** 2))
+                center_score = np.maximum(center_score, g)
+                # center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
                 
                 # height
                 cv2.fillPoly(center_z, [points.round().astype(np.int32).T], box.center[-1], INTERPOLATION)
@@ -663,7 +670,9 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             get_cameras = self.get_cameras_augm if self.augment_img is not None else self.get_cameras 
             result.update(get_cameras(batch, **self.image_config))
         
-        result.update(self.get_bev(batch))
+        result.update({'bev': torch.zeros((15,200,200))})
+        result.update({'token': batch['token']})
+        # result.update(self.get_bev(batch))
 
         if self.box and self.augment_bev is None:
             if self.box_3d:
@@ -675,12 +684,12 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             bev_augm = self.augment_bev()
             augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d, height, center_z, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
 
-            result['bev'][4:12] = augm_bev_gt
+            result['bev'][4:13] = augm_bev_gt
             result['center'] = augm_center_score
             result['offset'] = augm_center_offset
-            result['visibility'] = visibility
-            result['height'] = height
-            result['center_z'] = center_z
+            # result['visibility'] = visibility
+            # result['height'] = height
+            # result['center_z'] = center_z
 
             if self.box == 'pseudo':
                 result.update(self.get_bbox_from_bev(result['bev'], result['view']))

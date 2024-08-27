@@ -20,10 +20,11 @@ DYNAMIC = [
     'trailer', 'construction',
     'pedestrian',
     'motorcycle', 'bicycle',
-    # 'emergency',
+    'emergency',
 ]
 STATIC2 = ['ped_crossing','walkway','carpark_area']
-topology = True
+
+topology = False
 if topology:
     CLASSES = STATIC1 + DIVIDER + DYNAMIC + STATIC2
 else:
@@ -557,12 +558,13 @@ class NuScenesDataset(torch.utils.data.Dataset):
         static = self.get_static_layers(sample, STATIC1)                             # 200 200 2
         dividers = self.get_line_layers(sample, DIVIDER)                            # 200 200 2
         dynamic = self.get_dynamic_layers(sample, anns_dynamic)                     # 200 200 8
+        
         if topology:
             static2 = self.get_static_layers(sample, STATIC2)                             # 200 200 2
             # dividers_v2 = self.get_line_layers(sample, DIVIDER_v2)     
-            bev = np.concatenate((static, dividers, dynamic,static2), -1)                     
+            bev = np.concatenate((static, dividers, dynamic, static2), -1)                     
         else:
-            bev = np.concatenate((static, dividers, dynamic[0]), -1)                       # 200 200 12
+            bev = np.concatenate((static, dividers, dynamic), -1)                       # 200 200 12
         assert bev.shape[2] == NUM_CLASSES
 
         # Additional labels for vehicles only.

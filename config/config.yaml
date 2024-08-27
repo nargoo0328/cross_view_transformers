@@ -10,7 +10,7 @@ defaults:
 
 experiment:
   project: cross_view_transformers_test               # wandb project
-  uuid: ${now:%Y_%m%d_%H%M%S}                          # model name
+  uuid: ${now:%Y_%m%d_%H%M%S}                         # model name
   save_dir: ${hydra:runtime.cwd}/logs/                # log directory, will be created
 
   seed: 2024
@@ -57,4 +57,6 @@ trainer:
   val_check_interval: 1.0
   num_sanity_val_steps: 0
   gradient_clip_val: 5.0
-  sync_batchnorm: False
+  sync_batchnorm: True
+  # deterministic: False
+  # accumulate_grad_batches: 2

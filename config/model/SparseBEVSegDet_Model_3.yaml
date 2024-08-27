@@ -4,7 +4,7 @@ backbone:
   # _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
 
   # model_name: efficientnet_b4
-  # out_indices: [1,2,3,4]
+  # out_indices: [1,2,3]
   # fpn: True
 
   # # freeze_layers: [layer1]
@@ -13,6 +13,7 @@ backbone:
   _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
   image_height: ${data.image.h}
   image_width: ${data.image.w}
+  return_list: ["reduction_2", "reduction_3", "reduction_4"]
 
 neck:
   _target_: cross_view_transformer.model.backbones.agp.AGPNeck
@@ -20,12 +21,12 @@ neck:
   align_res_layer:
     _target_: cross_view_transformer.model.backbones.agp.AlignRes
     mode: "upsample"
-    scale_factors: [1, 2]
+    scale_factors: [1, 2, 4]
 
   prepare_c_layer:
     _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
 
-    in_channels: [56, 160]
+    in_channels: [32, 56, 160]
     mode: "doubleconv"
     tail_mode: "conv2d"
   
@@ -41,11 +42,14 @@ encoder:
   W: 200
   Z: 8
   num_points_in_pillar: 8
-  mode: grid
+  mode: grid # grid
+  start_H: 50
+  start_W: 50
 
   transformer:
     _target_: cross_view_transformer.model.sparsebev_seg.SegTransformerDecoder
-    
+    # return_inter: True
+
     num_layers: [1, 1]
     scales: [4.0, 1.0]
     up_scales: [4]
@@ -60,6 +64,7 @@ encoder:
 
 decoder:
   _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+  # _target_: cross_view_transformer.model.decoder.BevEncode
   in_channels: ${model.encoder.embed_dims}
 
 head:
@@ -67,16 +72,6 @@ head:
 
   dim_last: ${model.encoder.embed_dims}
   multi_head: True
-  # decoder:
-    # _target_: cross_view_transformer.model.decoder.BEVDecoder
-
-    # dim: ${model.encoder.embed_dims}
-    # blocks: [256, 128]
-    # residual: True
-    # factor: 2
-
-    # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-    # in_channels: 128
 
   outputs:
     VEHICLE: [0, 1]

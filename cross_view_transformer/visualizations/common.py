@@ -17,7 +17,7 @@ COLORS = {
 
     # dividers
     'road_divider':         (255, 200, 0),
-    'lane_divider':         (130, 130, 130),
+    'lane_divider':         (255, 200, 0),# (130, 130, 130),
 
     # dynamic
     'car':                  (255, 158, 0),
@@ -97,7 +97,7 @@ def decode_segmap(image, nc=5):
         rgb = np.stack([r, g, b], axis=0)
     return rgb.transpose(1,2,0)
 
-def colorize(x, colormap=None):
+def colorize(x, colormap='winter'):
     """
     x: (h w) np.uint8 0-255
     colormap
@@ -144,9 +144,9 @@ def resize(src, dst=None, shape=None, idx=0):
 class BaseViz:
     SEMANTICS = []
 
-    def __init__(self, label_indices=[i for i in range(15)], key = ['STATIC','DIVIDER','bev','ped'], flip=False, box='', bev=True, orientation=False, mask=False, box_3d=True):
+    def __init__(self, label_indices, key = ['STATIC','DIVIDER','bev','ped'], flip=False, box='', bev=True, orientation=False, mask=False, box_3d=True):
         
-        self.label_indices = label_indices
+        self.label_indices = label_indices[0]
         SEMANTICS = [self.SEMANTICS[i] for i in self.label_indices]
         self.colors = get_colors(SEMANTICS)
         self.cmap = COLORS_2
@@ -175,44 +175,27 @@ class BaseViz:
         cv2.fillPoly(img, [points.astype(np.int32)[:2].T], color=(164, 0, 0))
         return img
 
-    def visuaulize_pred_v2(self, pred, view, threshold):
-        class_num = pred.shape[0]
-        pred[pred>threshold]=1
-        pred[pred<=threshold]=0
-        pre=torch.zeros(200,200,3).type(torch.uint8)
-        pre += 200
-        for i, k in enumerate(self.key):
-            # if i==1 or i==3:
-            #     continue
-            pre[...,0][pred[i]==1]=self.cmap[k][0]
-            pre[...,1][pred[i]==1]=self.cmap[k][1]
-            pre[...,2][pred[i]==1]=self.cmap[k][2]
+    def visuaulize_pred(self, pred, view, threshold):
+        # class_num = pred.shape[0]
+        # pred[pred>threshold]=1
+        # pred[pred<=threshold]=0
+        # pre=torch.zeros(200,200,3).type(torch.uint8)
+        # pre += 200
+        # for i, k in enumerate(self.key):
+        #     # if i==1 or i==3:
+        #     #     continue
+        #     pre[...,0][pred[i]==1]=self.cmap[k][0]
+        #     pre[...,1][pred[i]==1]=self.cmap[k][1]
+        #     pre[...,2][pred[i]==1]=self.cmap[k][2]
 
-        pre = pre.cpu().numpy()
-        pre = pre.astype(np.uint8)
+        # pre = pre.cpu().numpy()
+        # pre = pre.astype(np.uint8)
+        pred_vis = pred.squeeze(0).cpu().numpy() * 255
+        pred_vis = pred_vis.astype(np.uint8)
+        pred_vis = colorize(pred_vis)
 
-        pre = self.draw_ego(pre, view)
-        return pre
-
-    # def visualize_pred_unused(self, bev, pred, threshold=None):
-    #     h, w, c = pred.shape
-
-    #     img = np.zeros((h, w, 3), dtype=np.float32)
-    #     img[...] = 0.5
-    #     colors = np.float32([
-    #         [0, .6, 0],
-    #         [1, .7, 0],
-    #         [1,  0, 0]
-    #     ])
-    #     tp = (pred > threshold) & (bev > threshold)
-    #     fp = (pred > threshold) & (bev < threshold)
-    #     fn = (pred <= threshold) & (bev > threshold)
-
-    #     for channel in range(c):
-    #         for i, m in enumerate([tp, fp, fn]):
-    #             img[m[..., channel]] = colors[i][None]
-
-    #     return (255 * img).astype(np.uint8)
+        pred_vis = self.draw_ego(pred_vis, view)
+        return pred_vis
 
     def visualize_bev(self, bev, view, scalar=1e-5):
         """
@@ -230,7 +213,6 @@ class BaseViz:
         # bev = bev[..., :c]
         c = len(self.label_indices)
         bev = bev[..., self.label_indices]
-
         eps = (scalar * np.arange(c))[None, None]
         idx = (bev + eps).argmax(axis=-1)
         
@@ -247,20 +229,30 @@ class BaseViz:
         result = self.draw_ego(result, view)
         return result
 
-    def visualize_custom(self, batch, pred, b, threshold):
-        if pred is None:
+    def visualize_custom(self, batch, pred_dict, b, threshold):
+        if pred_dict is None:
             return []
         bev = batch['bev']
+        view = batch['view'][0].cpu().numpy()
         # out = [self.visualize_pred(bev[b], pred[s][b].sigmoid()) for s in ['bev','ped']]
 
         tmp = list()
         for k in self.key:
-            tmp.append(pred[k].sigmoid())
-        pred = torch.cat(tmp,dim=1)
-        right = self.visuaulize_pred_v2(pred[b],batch['view'][0].cpu().numpy(),threshold)
+            tmp.append(pred_dict[k][b].detach().cpu().sigmoid())
+        pred = torch.cat(tmp, dim=1)
 
-        # out = [self.visualize_bev(pred[b],c) for c in np.linspace(0.1,0.5,9)]
-        return [right] #out+[right]
+        right = self.visuaulize_pred(pred, view, threshold)
+
+        aux_list = []
+        # if 'aux' in pred_dict:
+        #     for aux_pred in pred_dict['aux']:
+        #         tmp = list()
+        #         for k in self.key:
+        #             tmp.append(aux_pred[k][b].detach().cpu().sigmoid())
+        #         pred = torch.cat(tmp, dim=1)
+        #         aux_list.append(self.visuaulize_pred(pred, view, threshold))
+
+        return [right] + aux_list
     
     # copied from data.transforms
     def _prepare_augmented_boxes(self, bev_aug, points, inverse=True):
@@ -471,7 +463,7 @@ class BaseViz:
             if self.bev:
                 right = self.visualize_bev(bev[b],batch['view'][0].cpu().numpy())
                 right = [right] + self.visualize_custom(batch, pred, b,threshold)
-            
+
             if self.box:
                 if self.box_3d:
                     right = right + self.visualize_det(batch, b, pred)

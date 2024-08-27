@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import spconv.pytorch as spconv
+from torchvision.models.resnet import resnet18
 
 from cross_view_transformer.util.box_ops import box_cxcywh_to_xyxy
 
@@ -177,7 +178,6 @@ class UpsamplingAdd(nn.Module):
         x = self.upsample_layer(x)
         return x + x_skip
     
-from torchvision.models.resnet import resnet18
 class SimpleBEVDecoder(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -224,17 +224,74 @@ class SimpleBEVDecoder(nn.Module):
 
         return x
 
+class Up(nn.Module):
+    def __init__(self, in_channels, out_channels, scale_factor=2):
+        super().__init__()
+
+        self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear',
+                              align_corners=True)
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x1, x2):
+        x1 = self.up(x1)
+        x1 = torch.cat([x2, x1], dim=1)
+        return self.conv(x1)
+
+class BevEncode(nn.Module):
+    def __init__(self, in_channels):
+        super(BevEncode, self).__init__()
+
+        trunk = resnet18(pretrained=False, zero_init_residual=True)
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3,
+                               bias=False)
+        self.bn1 = trunk.bn1
+        self.relu = trunk.relu
+
+        self.layer1 = trunk.layer1
+        self.layer2 = trunk.layer2
+        self.layer3 = trunk.layer3
+
+        self.up1 = Up(64+256, 256, scale_factor=4)
+        self.up2 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear',
+                              align_corners=True),
+            nn.Conv2d(256, in_channels, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(in_channels),
+            # nn.ReLU(inplace=True),
+            # nn.Conv2d(128, outC, kernel_size=1, padding=0),
+        )
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+
+        x1 = self.layer1(x)
+        x = self.layer2(x1)
+        x = self.layer3(x)
+
+        x = self.up1(x, x1)
+        x = self.up2(x)
+
+        return x
+    
 class SegHead(nn.Module):
     def __init__(self, 
             dim_last, 
             multi_head, 
             outputs,
-            decoder=nn.Identity(),
             sparse=False,
         ):
         super().__init__()
 
-        self.decoder = decoder 
         self.multi_head = multi_head
         self.outputs = outputs
 
@@ -287,20 +344,25 @@ class SegHead(nn.Module):
                     nn.Conv2d(dim_last, dim_max, 1)
                 )
 
-    def forward_head(self, x):
+    def forward_head(self, x, aux=False):
         if self.multi_head:
-            return {k: v(x) for k, v in self.to_logits.items()}
+            if aux:
+                return {'VEHICLE': self.to_logits['VEHICLE'](x)}
+            else:
+                return {k: v(x) for k, v in self.to_logits.items()}
         else:
             x = self.to_logits(x)
             return {k: x[:, start:stop] for k, (start, stop) in self.outputs.items()}
         
-    def forward(self, x, return_bev=False, mask=None):
-        x = self.decoder(x)
-        y = self.forward_head(x)
-        if return_bev:
-            return y, x
+    def forward(self, x, aux=False):
+        if self.multi_head:
+            if aux:
+                return {'VEHICLE': self.to_logits['VEHICLE'](x)}
+            else:
+                return {k: v(x) for k, v in self.to_logits.items()}
         else:
-            return y
+            x = self.to_logits(x)
+            return {k: x[:, start:stop] for k, (start, stop) in self.outputs.items()}
 
 def box_to_bev(x, H, W, view, threshold):
     pred_boxes = x['pred_boxes'][..., :4].clone()
