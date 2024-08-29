@@ -188,9 +188,9 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         self.no_class = no_class
         self.box_3d = box_3d
         self.split_intrin_extrin = split_intrin_extrin
-
         self.img_transform = torchvision.transforms.ToTensor()
 
+        self.training = training
         self.augment_img = RandomTransformImage(img_params, training) if augment_img else None
         self.augment_bev = RandomTransformationBev(bev_aug_conf, training) if augment_bev else None
 
@@ -495,15 +495,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         buf = np.zeros((200, 200), dtype=np.uint8)
         coords = np.stack(np.meshgrid(np.arange(200), np.arange(200)), -1).astype(np.float32)
-        sigma = 3
+        sigma = 1
 
-        # height
-        center_z = np.zeros((200, 200), dtype=np.float32)
-        height = np.zeros((200, 200), dtype=np.float32)
-
-        # box
-        tmp = []
-        # lidar2img @ bev_augm @ pts
         for box_data in gt_box:
             if len(box_data) == 0:
                 continue
@@ -519,8 +512,9 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             box = Box(translation, size, sincos2quaternion(np.sin(yaw),np.cos(yaw)))
             
             points = box.bottom_corners()
-            if (points[0, :] > 50.0).all() or (points[0, :] < -50.0).all() or (points[1, :] > 50.0).all() or (points[1, :] < -50.0).all():
-                continue
+            # if self.training: # as we apply BEV augmentation, we should filter boxes that are out of range
+            #     if (points[0, :] > 50.0).all() or (points[0, :] < -50.0).all() or (points[1, :] > 50.0).all() or (points[1, :] < -50.0).all():
+            #         continue
             center = points.mean(-1)[:, None] # unsqueeze 1
 
             homog_points = np.ones((4, 4))
@@ -551,45 +545,25 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
                 center_score = np.maximum(center_score, g)
                 # center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
                 
-                # height
-                cv2.fillPoly(center_z, [points.round().astype(np.int32).T], box.center[-1], INTERPOLATION)
-                cv2.fillPoly(height, [points.round().astype(np.int32).T], box.wlh[-1], INTERPOLATION)
-
                 # visibility
                 visibility[mask] = visibility_token
 
-            x1 = np.min(points[0])
-            x2 = np.max(points[0])
-            y1 = np.min(points[1])
-            y2 = np.max(points[1])
-            tmp.append([x1, y1, x2, y2, int(box_data[-1]), box.wlh[-1]])
-            # TODO: add offset & centerness
+            # x1 = np.min(points[0])
+            # x2 = np.max(points[0])
+            # y1 = np.min(points[1])
+            # y2 = np.max(points[1])
+            # tmp.append([x1, y1, x2, y2, int(box_data[-1]), box.wlh[-1]])
         
         bev = self.to_tensor(255 * bev.transpose(1,2,0))
         center_score = self.to_tensor(center_score)
         center_offset = self.to_tensor(center_offset)
 
         # height
-        center_z = self.to_tensor(center_z)
-        height = self.to_tensor(height)
-        tmp = np.array(tmp)
 
-        if len(tmp) == 0:
-            return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}, height, center_z, visibility
-
-        boxes = np.zeros((len(tmp), 5))
-        labels = tmp[:,4].astype(np.int_)
-
-        boxes[:,0] = (tmp[:, 0] + tmp[:,2]) / 2.0
-        boxes[:,1] = (tmp[:,1] + tmp[:,3]) / 2.0
-        boxes[:,2] = tmp[:,2] - tmp[:,0]
-        boxes[:,3] = tmp[:,3] - tmp[:,1]
-
-        # normalized
-        boxes = boxes / 200.0
-        boxes[:, 4] = tmp[:, -1]
+        # if len(tmp) == 0:
+        #     return bev, center_score, center_offset, {'labels': np.empty((0)).astype(np.int_),'boxes':np.empty((0, 4)).astype(np.float32)}, height, center_z, visibility
         
-        return bev, center_score, center_offset, {'labels':labels, 'boxes':boxes.astype(np.float32)}, height, center_z, visibility
+        return bev, center_score, center_offset, visibility
     
     def _parse_bev_augm(self, result, bev_augm):
         box_cxcy = result['boxes'][:,:2] # N 2
@@ -682,7 +656,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         if self.augment_bev is not None:
             bev_augm = self.augment_bev()
-            augm_bev_gt, augm_center_score, augm_center_offset, gtbox_3d, height, center_z, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
+            augm_bev_gt, augm_center_score, augm_center_offset, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
 
             result['bev'][4:13] = augm_bev_gt
             result['center'] = augm_center_score
@@ -691,10 +665,10 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             # result['height'] = height
             # result['center_z'] = center_z
 
-            if self.box == 'pseudo':
-                result.update(self.get_bbox_from_bev(result['bev'], result['view']))
-            elif self.box == 'gt':
-                result.update(gtbox_3d)
+            # if self.box == 'pseudo':
+            #     result.update(self.get_bbox_from_bev(result['bev'], result['view']))
+            # elif self.box == 'gt':
+            #     result.update(gtbox_3d)
 
             bev_augm = torch.from_numpy(bev_augm)
             result['extrinsics'] = result['extrinsics'] @ bev_augm

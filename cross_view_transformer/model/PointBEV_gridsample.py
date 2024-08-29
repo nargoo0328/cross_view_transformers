@@ -10,7 +10,7 @@ from typing import Dict, Optional
 import spconv.pytorch as spconv
 import torch
 from einops import rearrange, repeat
-from torch import nn
+import torch.nn as nn
 
 from .ops.gs.functions import sparsed_grid_sample
 
@@ -479,6 +479,7 @@ class PositionalEncodingMap(nn.Module):
         out_c=128,
         num_hidden_layers=2,
         mid_c=256,
+        camera_embedding=0,
     ):
         """
         Returns: (sin(2^0 * pi * x), cos(2^0 * pi * x), ..., sin(2^(m-1) * pi * x), cos(2^(m-1) * pi * x))
@@ -516,10 +517,19 @@ class PositionalEncodingMap(nn.Module):
         else:
             self.layer = nn.Identity()
 
-    def forward(self, v, normalized=False):
+        if camera_embedding != 0 :
+            self.camera_embedding = nn.Embedding(camera_embedding, out_c)
+
+    def forward(self, v, normalized=False, camera_index=None):
         if not normalized:
             v = 2 * v - 1
-        return self.layer(positional_encoding(v, self.bvals, self.avals))
+
+        pos_embedding = self.layer(positional_encoding(v, self.bvals, self.avals))
+
+        if camera_index is not None:
+            pos_embedding = pos_embedding + self.camera_embedding(camera_index)
+
+        return pos_embedding
 
 class MLP(nn.Module):
     def __init__(

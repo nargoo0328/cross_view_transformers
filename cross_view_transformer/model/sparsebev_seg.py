@@ -29,6 +29,7 @@ class SparseBEVSeg(nn.Module):
             encoder=None,
             head=None,
             neck=None,
+            pos_encoder_2d=None,
             decoder=nn.Identity(),
             box_encoder=None,
             box_encoder_type='',
@@ -44,6 +45,7 @@ class SparseBEVSeg(nn.Module):
         self.encoder = encoder
         self.head = head
         self.neck = neck
+        self.pos_encoder_2d = pos_encoder_2d
         self.box_encoder = box_encoder 
         self.box_encoder_type = box_encoder_type
         self.decoder = decoder
@@ -59,6 +61,9 @@ class SparseBEVSeg(nn.Module):
 
         if self.neck is not None:
             features = self.neck(features)
+        
+        if self.pos_encoder_2d is not None:
+            features = self.pos_encoder_2d(features)
             
         features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
         
@@ -68,7 +73,7 @@ class SparseBEVSeg(nn.Module):
         # if len(inter_output) != 0:
         #     inter_output = [self.head(inter_output[i], aux=True) for i in range(len(inter_output))]
         #     output['aux'] = inter_output
-            
+        mid_output.update({'inter_output':inter_output})
         output['mid_output'] = mid_output#.squeeze() # squeeze group dimension
 
         return output
@@ -115,7 +120,8 @@ class SegHead(nn.Module):
         self.h = start_H
         self.w = start_W
         
-        self.bev_query = nn.Embedding(start_H * start_W, self.embed_dims * 4) 
+        scale = H // start_H
+        self.bev_query = nn.Embedding(start_H * start_W, self.embed_dims * scale) 
         # self.bev_query = nn.Embedding(200 * 200, self.embed_dims) 
 
     def forward(self, mlvl_feats, lidar2img):
@@ -368,6 +374,7 @@ class SegSampling(nn.Module):
         self.img_h = h
         self.img_w = w
         self.pc_range = pc_range
+        # self.pixel_positional_embedding = PositionalEncodingMap(in_c=2, out_c=128, mid_c=128, num_hidden_layers=0, camera_embedding=6)
 
         # self.sampling_offset = nn.Sequential(
         #     nn.Conv2d(embed_dims, embed_dims, 1),
@@ -383,9 +390,9 @@ class SegSampling(nn.Module):
         # original
         bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
         nn.init.zeros_(self.sampling_offset.weight)
-        nn.init.uniform_(bias[:, 0:2], -4.0, 4.0)
-        height = torch.linspace(-0.25, 1.25, self.num_groups * self.num_points).unsqueeze(1)
-        bias[:, 2:3] = height
+        nn.init.uniform_(bias[:, 0:3], -4.0, 4.0)
+        # height = torch.linspace(-0.25, 1.25, self.num_groups * self.num_points).unsqueeze(1)
+        # bias[:, 2:3] = height
 
         # height & length
         # nn.init.zeros_(self.z_pred.weight)
@@ -509,6 +516,7 @@ class SegSampling(nn.Module):
             scale_weights,
             lidar2img,
             self.img_h, self.img_w,
+            # pixel_positional_embedding=self.pixel_positional_embedding
             # sampling_offset,
         )  # [B, Q, G, P, C]
 
@@ -560,3 +568,60 @@ class AdaptiveMixing(nn.Module):
         pts = rearrange(pts, '(b g) (h w) c -> b (g c) h w',h=h, w=w, b=b, g=self.n_groups)
 
         return pts
+    
+class PixelPositionalEncoding(nn.Module):
+    def __init__(
+        self,
+        feat_height: int,
+        feat_width: int,
+        dim: int,
+        image_height: int,
+        image_width: int,
+    ):
+        super().__init__()
+
+        # 1 1 3 h w
+        xs = torch.linspace(0, 1, feat_width)
+        ys = torch.linspace(0, 1, feat_height)
+        image_plane = torch.stack(torch.meshgrid((xs, ys), indexing='xy'), 0)       # 2 h w
+        image_plane = F.pad(image_plane, (0, 0, 0, 0, 0, 1), value=1)                   # 3 h w
+
+        image_plane[0] *= image_width
+        image_plane[1] *= image_height
+        image_plane = image_plane.view(1, 1, 3, feat_height, feat_width) # 1 1 3 h w
+        self.register_buffer('image_plane', image_plane, persistent=False)
+
+        self.img_embed = nn.Conv2d(4, dim, 1, bias=False)
+        self.cam_embed = nn.Conv2d(4, dim, 1, bias=False)
+
+    def forward(
+        self,
+        I_inv: torch.FloatTensor,
+        E_inv: torch.FloatTensor,
+    ):
+        """
+        x: (b, c, H, W)
+        feature: (b, n, dim_in, h, w)
+        I_inv: (b, n, 3, 3)
+        E_inv: (b, n, 4, 4)
+
+        Returns: (b, d, H, W)
+        """
+
+        pixel = self.image_plane                                                # b n 3 h w
+        _, _, _, h, w = pixel.shape
+
+        c = E_inv[..., -1:]                                                     # b n 4 1
+        c_flat = rearrange(c, 'b n ... -> (b n) ...')[..., None]                # (b n) 4 1 1
+        c_embed = self.cam_embed(c_flat)                                        # (b n) d 1 1
+
+        pixel_flat = rearrange(pixel, '... h w -> ... (h w)')                   # 1 1 3 (h w)
+        cam = I_inv @ pixel_flat                                                # b n 3 (h w)
+        cam = F.pad(cam, (0, 0, 0, 1, 0, 0, 0, 0), value=1)                     # b n 4 (h w)
+        d = E_inv @ cam                                                         # b n 4 (h w)
+        d_flat = rearrange(d, 'b n d (h w) -> (b n) d h w', h=h, w=w)           # (b n) 4 h w
+        d_embed = self.img_embed(d_flat)                                        # (b n) d h w
+
+        img_embed = d_embed - c_embed                                           # (b n) d h w
+        img_embed = img_embed / (img_embed.norm(dim=1, keepdim=True) + 1e-7)    # (b n) d h w
+        return img_embed
