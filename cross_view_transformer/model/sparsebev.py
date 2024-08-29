@@ -1181,18 +1181,18 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
     valid_mask = valid_mask[i_batch, i_query, i_point, i_view]  # [B, Q, GP, 1]
 
     # if Q == 40000:
-    #     y = 146
-    #     x = 77
+    #     y = 112
+    #     x = 94
     #     index = x + y * 200
     #     print(i_view[0, index])
     #     print(sample_points_cam[0,index])
 
     #     # y = 4
-    #     x = 79
+    #     x = x+2
     #     index = x + y * 200
     #     print(i_view[0, index])
     #     print(sample_points_cam[0,index])
-    #     x = 81
+    #     x = x+2
     #     index = x + y * 200
     #     print(i_view[0, index])
     #     print(sample_points_cam[0,index])

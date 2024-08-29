@@ -13,15 +13,25 @@ import copy
 import math
 import spconv.pytorch as spconv
 from cross_view_transformer.util.box_ops import box_cxcywh_to_xyxy
-from .sparsebev import sampling_4d
+from .sparsebev import sampling_4d, inverse_sigmoid
 from .sparsebev import MLP as MLP_sparse
 from .PointBEV_gridsample import PositionalEncodingMap, MLP
 from .decoder import DecoderBlock
-from torchvision.models.resnet import Bottleneck
-from torchvision.models.swin_transformer import SwinTransformerBlock
 
-ResNetBottleNeck = lambda c: Bottleneck(c, c // 4)
+class SELayer(nn.Module):
+    def __init__(self, channels, act_layer=nn.ReLU, gate_layer=nn.Sigmoid):
+        super().__init__()
+        self.conv_reduce = nn.Conv2d(channels, channels, 1, bias=True)
+        self.act1 = act_layer()
+        self.conv_expand = nn.Conv2d(channels, channels, 1, bias=True)
+        self.gate = gate_layer()
 
+    def forward(self, x, x_se):
+        x_se = self.conv_reduce(x_se)
+        x_se = self.act1(x_se)
+        x_se = self.conv_expand(x_se)
+        return x * self.gate(x_se)
+    
 class SparseBEVSeg(nn.Module):
     def __init__(
             self,
@@ -36,6 +46,7 @@ class SparseBEVSeg(nn.Module):
             threshold=0.5,
             fusion=0.0,
             sparse=False,
+            pc_range=None,
     ):
         super().__init__()
     
@@ -53,6 +64,54 @@ class SparseBEVSeg(nn.Module):
         self.fusion = fusion
         self.sparse = sparse
 
+        self.pc_range = pc_range
+        self.depth_num = 64
+        self.depth_start = 1
+        self.position_encoder = nn.Sequential(
+                nn.Conv2d(self.depth_num * 3, 128 * 4, kernel_size=1, stride=1, padding=0),
+                nn.ReLU(), 
+                nn.Conv2d(128 * 4, 128, kernel_size=1, stride=1, padding=0),
+        )
+        self.fpe = SELayer(128)
+
+    def position_embeding(self, img_feats, lidar2img):
+        eps = 1e-5
+        
+        B, N, C, H, W = img_feats[0].shape
+        coords_h = torch.arange(H, device=img_feats[0].device).float() * 224 / H
+        coords_w = torch.arange(W, device=img_feats[0].device).float() * 480 / W
+
+        index  = torch.arange(start=0, end=self.depth_num, step=1, device=img_feats[0].device).float()
+        index_1 = index + 1
+        bin_size = (self.pc_range[3] - self.depth_start) / (self.depth_num * (1 + self.depth_num))
+        coords_d = self.depth_start + bin_size * index * index_1
+        # else:
+        #     index  = torch.arange(start=0, end=self.depth_num, step=1, device=img_feats[0].device).float()
+        #     bin_size = (self.position_range[3] - self.depth_start) / self.depth_num
+        #     coords_d = self.depth_start + bin_size * index
+
+        D = coords_d.shape[0]
+        coords = torch.stack(torch.meshgrid([coords_w, coords_h, coords_d])).permute(1, 2, 3, 0) # W, H, D, 3
+        coords = torch.cat((coords, torch.ones_like(coords[..., :1])), -1)
+        coords[..., :2] = coords[..., :2] * torch.maximum(coords[..., 2:3], torch.ones_like(coords[..., 2:3])*eps)
+        img2lidars = lidar2img.inverse() # b n 4 4
+
+        coords = coords.view(1, 1, W, H, D, 4, 1).repeat(B, N, 1, 1, 1, 1, 1)
+        img2lidars = img2lidars.view(B, N, 1, 1, 1, 4, 4).repeat(1, 1, W, H, D, 1, 1)
+        coords3d = torch.matmul(img2lidars, coords).squeeze(-1)[..., :3]
+        coords3d[..., 0:1] = (coords3d[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
+        coords3d[..., 1:2] = (coords3d[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
+        coords3d[..., 2:3] = (coords3d[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2])
+
+        # coords_mask = (coords3d > 1.0) | (coords3d < 0.0) 
+        # coords_mask = coords_mask.flatten(-2).sum(-1) > (D * 0.5)
+        # coords_mask = masks | coords_mask.permute(0, 1, 3, 2)
+        coords3d = coords3d.permute(0, 1, 4, 5, 3, 2).contiguous().view(B*N, -1, H, W)
+        coords3d = inverse_sigmoid(coords3d)
+        coords_position_embeding = self.position_encoder(coords3d)
+        
+        return coords_position_embeding.view(B, N, 128, H, W)
+    
     def forward(self, batch):
         b, n, _, _, _ = batch['image'].shape
         image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
@@ -64,8 +123,11 @@ class SparseBEVSeg(nn.Module):
         
         if self.pos_encoder_2d is not None:
             features = self.pos_encoder_2d(features)
-            
+        
         features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
+        pos_embedding_2d = self.position_embeding(features, lidar2img)
+        pos_embedding_2d = self.fpe(pos_embedding_2d.flatten(0,1), features[0].flatten(0,1)).view(features[0].size())
+        features[0] = features[0] + pos_embedding_2d
         
         x, mid_output, inter_output = self.encoder(features, lidar2img)
         x = self.decoder(x)
@@ -347,7 +409,7 @@ class SegTransformerDecoderLayer(nn.Module):
         #     else:
         #         bev_query = bev_query + self.mid_conv(bev_query, sampled_feat)
         # else:
-        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w)
+        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w) # b p d h w & b d h w & b Q d b K d
         bev_query = bev_query + self.mid_conv(sampled_feat)
         
         # points_weight = self.points_weight(bev_query) # b p h w
@@ -390,9 +452,9 @@ class SegSampling(nn.Module):
         # original
         bias = self.sampling_offset.bias.data.view(self.num_groups * self.num_points, 3)
         nn.init.zeros_(self.sampling_offset.weight)
-        nn.init.uniform_(bias[:, 0:3], -4.0, 4.0)
-        # height = torch.linspace(-0.25, 1.25, self.num_groups * self.num_points).unsqueeze(1)
-        # bias[:, 2:3] = height
+        nn.init.uniform_(bias[:, 0:2], -4.0, 4.0)
+        height = torch.linspace(-0.25, 1.25, self.num_groups * self.num_points).unsqueeze(1)
+        bias[:, 2:3] = height
 
         # height & length
         # nn.init.zeros_(self.z_pred.weight)
