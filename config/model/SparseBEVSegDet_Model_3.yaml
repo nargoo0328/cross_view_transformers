@@ -13,8 +13,8 @@ backbone:
   _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
   image_height: ${data.image.h}
   image_width: ${data.image.w}
-  return_list: ["reduction_2", "reduction_3", "reduction_4"]
-  # return_list: ["reduction_3", "reduction_4"]
+  # return_list: ["reduction_2", "reduction_3", "reduction_4"]
+  return_list: ["reduction_3", "reduction_4"]
   checkpoint: True
 
 neck:
@@ -23,14 +23,14 @@ neck:
   align_res_layer:
     _target_: cross_view_transformer.model.backbones.agp.AlignRes
     mode: "upsample"
-    scale_factors: [1, 2, 4]
-    # scale_factors: [1, 2]
+    # scale_factors: [1, 2, 4]
+    scale_factors: [1, 2]
 
   prepare_c_layer:
     _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
 
-    in_channels: [32, 56, 160]
-    # in_channels: [56, 160]
+    # in_channels: [32, 56, 160]
+    in_channels: [56, 160]
     mode: "doubleconv"
     tail_mode: "conv2d"
   
