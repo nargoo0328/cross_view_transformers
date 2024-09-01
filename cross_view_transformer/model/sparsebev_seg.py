@@ -18,8 +18,22 @@ from .sparsebev import MLP as MLP_sparse
 from .PointBEV_gridsample import PositionalEncodingMap, MLP
 from .decoder import DecoderBlock
 
+def pos2posemb3d(pos, num_pos_feats=64, temperature=10000):
+    scale = 2 * math.pi
+    pos = pos * scale
+    dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=pos.device)
+    dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
+    pos_x = pos[..., 0, None] / dim_t
+    pos_y = pos[..., 1, None] / dim_t
+    pos_z = pos[..., 2, None] / dim_t
+    pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
+    pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
+    pos_z = torch.stack((pos_z[..., 0::2].sin(), pos_z[..., 1::2].cos()), dim=-1).flatten(-2)
+    posemb = torch.cat((pos_y, pos_x, pos_z), dim=-1)
+    return posemb
+
 class SELayer(nn.Module):
-    def __init__(self, channels, act_layer=nn.ReLU, gate_layer=nn.Sigmoid):
+    def __init__(self, channels, act_layer=nn.GELU, gate_layer=nn.Sigmoid):
         super().__init__()
         self.conv_reduce = nn.Conv2d(channels, channels, 1, bias=True)
         self.act1 = act_layer()
@@ -69,14 +83,14 @@ class SparseBEVSeg(nn.Module):
         self.depth_start = 1
         self.position_encoder = nn.Sequential(
                 nn.Conv2d(self.depth_num * 3, 128 * 4, kernel_size=1, stride=1, padding=0),
-                nn.ReLU(), 
+                nn.GELU(), 
                 nn.Conv2d(128 * 4, 128, kernel_size=1, stride=1, padding=0),
         )
         self.fpe = SELayer(128)
         self.positional_encoding = SinePositionalEncoding3D(128 // 2, normalize=True)
         self.adapt_pos3d = nn.Sequential(
                 nn.Conv2d(128*3//2, 128*4, kernel_size=1, stride=1, padding=0),
-                nn.ReLU(),
+                nn.GELU(),
                 nn.Conv2d(128*4, 128, kernel_size=1, stride=1, padding=0),
         )
 
@@ -240,8 +254,13 @@ class SegTransformerDecoder(nn.Module):
         self.scale = scales
         self.num_groups = num_groups
         self.pc_range = pc_range
-        position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
-        position_encoding_bev = PositionalEncodingMap(in_c=2, out_c=128, mid_c=128 * 2)
+        # position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
+        position_encoding = None
+        position_encoding_bev = nn.Sequential(
+                nn.Linear(128 * 3 // 2, 128 * 4),
+                nn.GELU(),
+                nn.Linear(128 * 4, 128),
+        )
         self.layer = nn.ModuleList([SegTransformerDecoderLayer(int(scale) * embed_dims, num_points, num_groups, num_levels, scale, pc_range, h, w, position_encoding, position_encoding_bev) for scale in self.scale])
         # raise BaseException
         decoder_layers = list()
@@ -394,7 +413,8 @@ class SegTransformerDecoderLayer(nn.Module):
         )
         # sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w) # b p d h w & b d h w & b Q d b K d
         # bev_query = bev_query + self.mid_conv(sampled_feat)
-        bev_pos_embed = self.position_encoding_bev(bev_pos[..., :2]) # b h w 2 -> b h w d
+
+        bev_pos_embed = self.position_encoding_bev(pos2posemb3d(bev_pos)) # b h w 2 -> b h w d
         bev_query = bev_query + self.cross_attn(bev_query, sampled_feat, bev_pos_embed, pos_embed_2d)
         
         # points_weight = self.points_weight(bev_query) # b p h w
@@ -509,8 +529,6 @@ class SegSampling(nn.Module):
 
             reference_points = reference_points + sampling_offset
 
-            # y = 115
-            # x = 105
             # if reference_points.shape[1] == 40000:
             #     y = 135
             #     x = 55
@@ -524,14 +542,6 @@ class SegSampling(nn.Module):
             #     x = x + 2
             #     index = x + y * 200
             #     print("3d coord", reference_points[0, index])
-
-            #     y = 118
-            #     x = 105
-            #     index = x + y * 200
-            #     print("Stage 2 3d", reference_points[0, index])
-            # else:
-            #     index = x//4 + y // 4 * 50
-            #     print("Stage 1 3d", reference_points[0, index])
             
         # 3d sampling offset 
         elif mode == 'pillar':

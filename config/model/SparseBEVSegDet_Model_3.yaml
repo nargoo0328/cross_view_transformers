@@ -15,7 +15,7 @@ backbone:
   image_width: ${data.image.w}
   # return_list: ["reduction_2", "reduction_3", "reduction_4"]
   return_list: ["reduction_3", "reduction_4"]
-  checkpoint: True
+  # checkpoint: True
 
 neck:
   _target_: cross_view_transformer.model.backbones.agp.AGPNeck
@@ -67,8 +67,8 @@ encoder:
     num_points: 8
 
 decoder:
-  _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-  # _target_: cross_view_transformer.model.decoder.BevEncode
+  # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+  _target_: cross_view_transformer.model.decoder.BevEncode
   in_channels: ${model.encoder.embed_dims}
 
 head:

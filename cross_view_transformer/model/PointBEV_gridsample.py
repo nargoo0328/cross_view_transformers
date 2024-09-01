@@ -517,17 +517,11 @@ class PositionalEncodingMap(nn.Module):
         else:
             self.layer = nn.Identity()
 
-        if camera_embedding != 0 :
-            self.camera_embedding = nn.Embedding(camera_embedding, out_c)
-
-    def forward(self, v, normalized=False, camera_index=None):
+    def forward(self, v, normalized=False):
         if not normalized:
             v = 2 * v - 1
 
         pos_embedding = self.layer(positional_encoding(v, self.bvals, self.avals))
-
-        if camera_index is not None:
-            pos_embedding = pos_embedding + self.camera_embedding(camera_index)
 
         return pos_embedding
 
