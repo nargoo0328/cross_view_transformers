@@ -1101,7 +1101,7 @@ class AdaptiveMixing(nn.Module):
         else:
             return self.inner_forward(x, query)
 
-def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, image_w, sampling_offset=None, eps=1e-5, pixel_positional_embedding=None):
+def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, image_w, sampling_offset=None, eps=1e-5):
     """
     Args:
         sample_points: 3D sampling points in shape [B, Q, T, G, P, 3]
@@ -1181,9 +1181,10 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
     valid_mask = valid_mask[i_batch, i_query, i_point, i_view]  # [B, Q, GP, 1]
 
     # if Q == 40000:
-    #     y = 135
-    #     x = 55
+    #     y = 121
+    #     x = 64
     #     index = x + y * 200
+    #     print(valid_mask[0, index])
     #     print(i_view[0, index])
     #     print(sample_points_cam[0,index])
 
@@ -1224,11 +1225,6 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
     C = final.shape[2]  # [BG, Q, C, P]
     final = final.reshape(B, G, Q, C, P)
     final = final.permute(0, 2, 1, 4, 3) # [B, Q, G, P, C]
-
-    if pixel_positional_embedding is not None:
-        sample_points_cam = rearrange(sample_points_cam, '(b g) q p d -> b q g p d',b=B, g=G)[..., :2]
-        i_view = rearrange(i_view, 'b q (g p) d -> b q g p d', g=G, p=P).squeeze(-1)
-        final = final + pixel_positional_embedding(sample_points_cam, camera_index=i_view)
 
     return final, sample_points_cam[..., :2]
 

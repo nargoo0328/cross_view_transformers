@@ -479,7 +479,6 @@ class PositionalEncodingMap(nn.Module):
         out_c=128,
         num_hidden_layers=2,
         mid_c=256,
-        camera_embedding=0,
     ):
         """
         Returns: (sin(2^0 * pi * x), cos(2^0 * pi * x), ..., sin(2^(m-1) * pi * x), cos(2^(m-1) * pi * x))

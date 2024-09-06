@@ -9,7 +9,7 @@ from cross_view_transformer.util.box_ops import box_cxcywh_to_xyxy
 import cv2
 from cross_view_transformer.metrics import CustomNuscMetric
 
-def prepare_val(cfg,device,CHECKPOINT_PATH=None,batch_size=1,mode='split'):
+def prepare_val(cfg, device, CHECKPOINT_PATH=None, batch_size=1, mode='split'):
     core.global_hydra.GlobalHydra.instance().clear()        # required for Hydra in notebooks
     initialize(config_path='./config')
     OmegaConf.resolve(cfg)

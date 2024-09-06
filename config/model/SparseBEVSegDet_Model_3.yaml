@@ -33,6 +33,7 @@ neck:
     in_channels: [56, 160]
     mode: "doubleconv"
     tail_mode: "conv2d"
+    depth_num: 64
   
   list_output: True
 
@@ -83,4 +84,4 @@ head:
     offset: [2, 4]
     # height: [4, 5]
 
-pc_range: [-50.0, -50.0, -4.0, 50.0, 50.0, 4.0]
+pc_range: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0] # [-50.0, -50.0, -4.0, 50.0, 50.0, 4.0]

@@ -5,8 +5,8 @@ import torch.nn.functional as F
 
 from .common import Normalize
 from .csrc.wrapper import msmv_sampling
+from .layers import LayerNorm2d
 from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
 import copy
 # from .checkpoint import checkpoint as cp
 
@@ -18,26 +18,30 @@ from .sparsebev import MLP as MLP_sparse
 from .PointBEV_gridsample import PositionalEncodingMap, MLP
 from .decoder import DecoderBlock
 
-def pos2posemb3d(pos, num_pos_feats=64, temperature=10000):
+def pos2posemb3d(pos, num_pos_feats=64, temperature=10000, with_z=False):
     scale = 2 * math.pi
     pos = pos * scale
     dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=pos.device)
     dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
     pos_x = pos[..., 0, None] / dim_t
     pos_y = pos[..., 1, None] / dim_t
-    pos_z = pos[..., 2, None] / dim_t
     pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
     pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
-    pos_z = torch.stack((pos_z[..., 0::2].sin(), pos_z[..., 1::2].cos()), dim=-1).flatten(-2)
-    posemb = torch.cat((pos_y, pos_x, pos_z), dim=-1)
+
+    if with_z:
+        pos_z = pos[..., 2, None] / dim_t
+        pos_z = torch.stack((pos_z[..., 0::2].sin(), pos_z[..., 1::2].cos()), dim=-1).flatten(-2)
+        posemb = torch.cat((pos_x, pos_y, pos_z), dim=-1)
+    else:
+        posemb = torch.cat((pos_x, pos_y), dim=-1)
     return posemb
 
 class SELayer(nn.Module):
     def __init__(self, channels, act_layer=nn.GELU, gate_layer=nn.Sigmoid):
         super().__init__()
-        self.conv_reduce = nn.Conv2d(channels, channels, 1, bias=True)
+        self.conv_reduce = nn.Conv2d(channels, channels, 1)
         self.act1 = act_layer()
-        self.conv_expand = nn.Conv2d(channels, channels, 1, bias=True)
+        self.conv_expand = nn.Conv2d(channels, channels, 1)
         self.gate = gate_layer()
 
     def forward(self, x, x_se):
@@ -81,34 +85,37 @@ class SparseBEVSeg(nn.Module):
         self.pc_range = pc_range
         self.depth_num = 64
         self.depth_start = 1
-        self.position_encoder = nn.Sequential(
-                nn.Conv2d(self.depth_num * 3, 128 * 4, kernel_size=1, stride=1, padding=0),
-                nn.GELU(), 
-                nn.Conv2d(128 * 4, 128, kernel_size=1, stride=1, padding=0),
-        )
-        self.fpe = SELayer(128)
-        self.positional_encoding = SinePositionalEncoding3D(128 // 2, normalize=True)
-        self.adapt_pos3d = nn.Sequential(
-                nn.Conv2d(128*3//2, 128*4, kernel_size=1, stride=1, padding=0),
-                nn.GELU(),
-                nn.Conv2d(128*4, 128, kernel_size=1, stride=1, padding=0),
-        )
+        # self.position_encoder = nn.Sequential(
+        #         nn.Conv2d(self.depth_num * 3, 128 * 4, kernel_size=1, stride=1, padding=0),
+        #         nn.GELU(), 
+        #         nn.Conv2d(128 * 4, 128, kernel_size=1, stride=1, padding=0),
+        # )
+        # self.fpe = SELayer(128)
+        # self.positional_encoding = SinePositionalEncoding3D(128 // 2, normalize=True)
+        # self.adapt_pos3d = nn.Sequential(
+        #         nn.Conv2d(128*3//2, 128*4, kernel_size=1, stride=1, padding=0),
+        #         nn.GELU(),
+        #         nn.Conv2d(128*4, 128, kernel_size=1, stride=1, padding=0),
+        # )
+        # self.depth = nn.Conv2d(128, self.depth_num, 1)
+        self.LID = True
 
-    def position_embeding(self, img_feats, lidar2img):
+    def get_pixel_coords_3d(self, img_feats, lidar2img):
         eps = 1e-5
         
         B, N, C, H, W = img_feats[0].shape
         coords_h = torch.arange(H, device=img_feats[0].device).float() * 224 / H
         coords_w = torch.arange(W, device=img_feats[0].device).float() * 480 / W
 
-        index  = torch.arange(start=0, end=self.depth_num, step=1, device=img_feats[0].device).float()
-        index_1 = index + 1
-        bin_size = (self.pc_range[3] - self.depth_start) / (self.depth_num * (1 + self.depth_num))
-        coords_d = self.depth_start + bin_size * index * index_1
-        # else:
-        #     index  = torch.arange(start=0, end=self.depth_num, step=1, device=img_feats[0].device).float()
-        #     bin_size = (self.position_range[3] - self.depth_start) / self.depth_num
-        #     coords_d = self.depth_start + bin_size * index
+        if self.LID:
+            index  = torch.arange(start=0, end=self.depth_num, step=1, device=img_feats[0].device).float()
+            index_1 = index + 1
+            bin_size = (self.pc_range[3] - self.depth_start) / (self.depth_num * (1 + self.depth_num))
+            coords_d = self.depth_start + bin_size * index * index_1
+        else:
+            index  = torch.arange(start=0, end=self.depth_num, step=1, device=img_feats[0].device).float()
+            bin_size = (self.pc_range[3] - self.depth_start) / self.depth_num
+            coords_d = self.depth_start + bin_size * index
 
         D = coords_d.shape[0]
         coords = torch.stack(torch.meshgrid([coords_w, coords_h, coords_d])).permute(1, 2, 3, 0) # W, H, D, 3
@@ -118,21 +125,52 @@ class SparseBEVSeg(nn.Module):
 
         coords = coords.view(1, 1, W, H, D, 4, 1).repeat(B, N, 1, 1, 1, 1, 1)
         img2lidars = img2lidars.view(B, N, 1, 1, 1, 4, 4).repeat(1, 1, W, H, D, 1, 1)
-        coords3d = torch.matmul(img2lidars, coords).squeeze(-1)[..., :3]
+        coords3d = torch.matmul(img2lidars, coords).squeeze(-1)[..., :3] # B N W H D 3
 
-        coords3d[..., 0:1] = (coords3d[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
-        coords3d[..., 1:2] = (coords3d[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
-        coords3d[..., 2:3] = (coords3d[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2])
-
+        # coords3d[..., 0:1] = (coords3d[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
+        # coords3d[..., 1:2] = (coords3d[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
+        # coords3d[..., 2:3] = (coords3d[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2])
         # coords_mask = (coords3d > 1.0) | (coords3d < 0.0) 
         # coords_mask = coords_mask.flatten(-2).sum(-1) > (D * 0.5)
         # coords_mask = masks | coords_mask.permute(0, 1, 3, 2)
-        coords3d = coords3d.permute(0, 1, 4, 5, 3, 2).contiguous().view(B*N, -1, H, W)
-        coords3d = inverse_sigmoid(coords3d)
-        coords_position_embeding = self.position_encoder(coords3d)
-        
-        return coords_position_embeding.view(B, N, 128, H, W)
+        # coords3d = coords3d.permute(0, 1, 4, 5, 3, 2).contiguous().view(B*N, -1, H, W)
+        # coords3d = inverse_sigmoid(coords3d)
+        # coords_position_embeding = self.position_encoder(coords3d)
+
+        return coords3d
     
+    def pred_depth(self, img_feats, lidar2img, depth):
+        b, n, c, h, w = img_feats[0].shape
+        coords_3d = self.get_pixel_coords_3d(img_feats, lidar2img) # b n w h d 3
+        # img_feats = rearrange(img_feats[0], 'b n d h w -> (b n) d h w')
+        depth = depth.softmax(1) # (b n) depth h w
+        
+        # depth_index = torch.argmax(depth, dim=1)[..., None] # 
+        # depth_index = rearrange(depth_index, '(b n) h w 1 -> b n w h 1', b=b, n=n)
+        
+        # i_batch = torch.arange(b, dtype=torch.long, device=depth_index.device)
+        # i_cam = torch.arange(n, dtype=torch.long, device=depth_index.device)
+        # i_h = torch.arange(h, dtype=torch.long, device=depth_index.device)
+        # i_w = torch.arange(w, dtype=torch.long, device=depth_index.device)
+        # i_batch = i_batch.view(b, 1, 1, 1, 1).expand(b, n, w, h, 1)
+        # i_cam = i_cam.view(1, n, 1, 1, 1).expand(b, n, w, h, 1)
+        # i_h = i_h.view(1, 1, 1, h, 1).expand(b, n, w, h, 1)
+        # i_w = i_w.view(1, 1, w, 1, 1).expand(b, n, w, h, 1)
+    
+        # coords_3d = coords_3d[i_batch, i_cam, i_w, i_h, depth_index] # b n w h 1 3
+        # coords_3d = rearrange(coords_3d, 'b n w h 1 c -> b n c h w')
+        
+        # Step 3: Rearrange coords_3d to match the depth dimension layout
+        coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
+        
+        # Step 4: Perform a weighted sum over the depth dimension using the softmax probabilities
+        depth = depth.unsqueeze(-1)  # (b n) depth h w 1
+        coords_3d = (depth * coords_3d).sum(1)  # (b n) h w 3
+        
+        # Step 5: Reshape coords_3d to match the original feature map shape
+        coords_3d = rearrange(coords_3d, '(b n) h w d-> b n d h w', b=b, n=n)
+        return coords_3d
+        
     def forward(self, batch):
         b, n, _, _, _ = batch['image'].shape
         image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
@@ -140,22 +178,23 @@ class SparseBEVSeg(nn.Module):
         features = self.backbone(self.norm(image))
 
         if self.neck is not None:
-            features = self.neck(features)
+            features, depth = self.neck(features)
         
         if self.pos_encoder_2d is not None:
             features = self.pos_encoder_2d(features)
         
         features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
-        pos_embedding_2d = self.position_embeding(features, lidar2img)
-        pos_embedding_2d = self.fpe(pos_embedding_2d.flatten(0,1), features[0].flatten(0,1)).view(features[0].size())
+        
+        pred_depth = self.pred_depth(features, lidar2img, depth)
+        # pos_embedding_2d = self.fpe(pos_embedding_2d.flatten(0,1), features[0].flatten(0,1)).view(features[0].size())
 
-        masks = features[0].new_zeros(
-            (b, n, features[0].shape[-2], features[0].shape[-1]))
-        sin_embed = self.positional_encoding(masks)
-        sin_embed = self.adapt_pos3d(sin_embed.flatten(0, 1)).view(features[0].size())
-        pos_embedding_2d = pos_embedding_2d + sin_embed
+        # masks = features[0].new_zeros(
+        #     (b, n, features[0].shape[-2], features[0].shape[-1]))
+        # sin_embed = self.positional_encoding(masks)
+        # sin_embed = self.adapt_pos3d(sin_embed.flatten(0, 1)).view(features[0].size())
+        # pos_embedding_2d = pos_embedding_2d + sin_embed
 
-        features[0] = torch.cat((features[0], pos_embedding_2d), dim=2)
+        features[0] = torch.cat((features[0], pred_depth), dim=2)
         
         x, mid_output, inter_output = self.encoder(features, lidar2img)
         x = self.decoder(x)
@@ -164,7 +203,8 @@ class SparseBEVSeg(nn.Module):
         #     inter_output = [self.head(inter_output[i], aux=True) for i in range(len(inter_output))]
         #     output['aux'] = inter_output
         mid_output.update({'inter_output':inter_output})
-        output['mid_output'] = mid_output#.squeeze() # squeeze group dimension
+        mid_output['pred_depth'] = pred_depth
+        output['mid_output'] = mid_output #.squeeze() # squeeze group dimension
 
         return output
     
@@ -254,13 +294,19 @@ class SegTransformerDecoder(nn.Module):
         self.scale = scales
         self.num_groups = num_groups
         self.pc_range = pc_range
-        # position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
+        position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
+        # position_encoding = nn.Sequential(
+        #         nn.Linear(128 * 3 // 2, 128 * 4),
+        #         nn.GELU(),
+        #         nn.Linear(128 * 4, 128),
+        # )
         position_encoding = None
-        position_encoding_bev = nn.Sequential(
-                nn.Linear(128 * 3 // 2, 128 * 4),
-                nn.GELU(),
-                nn.Linear(128 * 4, 128),
-        )
+        # position_encoding_bev = nn.Sequential(
+        #         nn.Linear(128 * 3 // 2, 128 * 4),
+        #         nn.GELU(),
+        #         nn.Linear(128 * 4, 128),
+        # )
+        position_encoding_bev = None
         self.layer = nn.ModuleList([SegTransformerDecoderLayer(int(scale) * embed_dims, num_points, num_groups, num_levels, scale, pc_range, h, w, position_encoding, position_encoding_bev) for scale in self.scale])
         # raise BaseException
         decoder_layers = list()
@@ -342,14 +388,16 @@ class SegTransformerDecoderLayer(nn.Module):
         )
 
         # self.mid_conv = nn.Sequential(
-        #         nn.Conv2d(num_points * 128, embed_dims * 4, 1),
+        #         nn.Conv2d(128, 128 * 4, 3, padding=1),
         #         nn.GELU(),
-        #         nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
-        #         nn.GELU(),
-        #         nn.Conv2d(embed_dims * 4, embed_dims, 1),
+        #         nn.Conv2d(128 * 4, embed_dims, 3, padding=1),
         # )
-
-        self.cross_attn = PointCrossAttention(embed_dims, num_points)
+        self.mid_conv = nn.Sequential(
+                nn.Conv2d(128, 128 * 4, 3, padding=1, bias=False),
+                nn.GELU(),
+                nn.Conv2d(128 * 4, embed_dims, 3, padding=1),
+        )
+        # self.cross_attn = PointCrossAttention_2(embed_dims, num_points)
 
         self.out_conv = nn.Sequential(
             # nn.Conv2d(embed_dims, embed_dims, 1),
@@ -361,15 +409,15 @@ class SegTransformerDecoderLayer(nn.Module):
         self.sampling = SegSampling(embed_dims, num_groups=num_groups, num_points=num_points, num_levels=num_levels, pc_range=pc_range, h=h, w=w)
         # self.ffn = MLP_sparse(embed_dims, embed_dims, embed_dims, 2)
 
-        self.norm1 = nn.InstanceNorm2d(embed_dims)
-        self.norm2 = nn.InstanceNorm2d(embed_dims)
-        self.norm3 = nn.InstanceNorm2d(embed_dims)
+        self.norm1 = LayerNorm2d(embed_dims)
+        self.norm2 = LayerNorm2d(embed_dims)
+        self.norm3 = LayerNorm2d(embed_dims)
 
         self.init_weights()
 
     def init_weights(self):
         self.sampling.init_weights()
-
+        
     def forward(self,
                 mlvl_feats, 
                 lidar2img,
@@ -402,7 +450,7 @@ class SegTransformerDecoderLayer(nn.Module):
         bev_query = bev_query + self.in_conv(bev_query)
         bev_query = self.norm1(bev_query)
 
-        sampled_feat, pos_embed_2d, mid_output = self.sampling(
+        sampled_feat, mid_output = self.sampling(
             bev_query,
             mlvl_feats,
             bev_pos,
@@ -411,11 +459,14 @@ class SegTransformerDecoderLayer(nn.Module):
             scale,
             mode,
         )
+        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b p (g c) h w', h=h, w=w, g=1)
+        sampled_feat = sampled_feat.sum(1)
         # sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w) # b p d h w & b d h w & b Q d b K d
-        # bev_query = bev_query + self.mid_conv(sampled_feat)
-
-        bev_pos_embed = self.position_encoding_bev(pos2posemb3d(bev_pos)) # b h w 2 -> b h w d
-        bev_query = bev_query + self.cross_attn(bev_query, sampled_feat, bev_pos_embed, pos_embed_2d)
+        bev_query = bev_query + self.mid_conv(sampled_feat)
+        
+        # bev_pos_embed = self.position_encoding_bev(pos2posemb3d(bev_pos, with_z=True)) # b h w 2 -> b h w d
+        # q, att = self.cross_attn(bev_query, sampled_feat, bev_pos_embed, pos_embed_2d)
+        # bev_query = bev_query + q
         
         # points_weight = self.points_weight(bev_query) # b p h w
         # points_weight = points_weight.softmax(1).unsqueeze(1) # b 1 p h w
@@ -427,7 +478,7 @@ class SegTransformerDecoderLayer(nn.Module):
         bev_query = bev_query + self.out_conv(bev_query)
         bev_query = self.norm3(bev_query)
 
-        # mid_output.update({'points_weight': points_weight})
+        mid_output['sampled_feat'] = sampled_feat
         return bev_query, mid_output
     
 class SegSampling(nn.Module):
@@ -452,6 +503,8 @@ class SegSampling(nn.Module):
         # self.z_pred = nn.Conv2d(embed_dims, 2, 1) # predict height & length
         self.scale_weights = nn.Conv2d(embed_dims, num_groups * num_points * num_levels, 1) if num_levels!= 1 else None
         self.eps = eps
+        self.threshold = 0.1
+        self.alpha = 0.15
 
     def init_weights(self):
         # original
@@ -526,12 +579,16 @@ class SegSampling(nn.Module):
             reference_points[..., 0:1] = (reference_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
             reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
             reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
-
+            
+            # b, q, g, p = sampling_offset.shape[:-1]
+            # height = torch.linspace(-1.0, 3.0, self.num_groups * self.num_points).view(1, 1, 1, -1, 1).expand(b, q, g, p, -1).to(sampling_offset.device)
+            # sampling_offset = torch.cat((sampling_offset, height), dim=-1)
+            
             reference_points = reference_points + sampling_offset
 
             # if reference_points.shape[1] == 40000:
-            #     y = 135
-            #     x = 55
+            #     y = 121
+            #     x = 64
             #     index = x + y * 200
             #     print("3d coord", reference_points[0, index])
 
@@ -584,7 +641,7 @@ class SegSampling(nn.Module):
             # pixel_positional_embedding=self.pixel_positional_embedding
             # sampling_offset,
         )  # [B, Q, G, P, C]
-        sampled_feats, pos_embed_2d = torch.split(sampled_feats, 128, dim=-1)
+        sampled_feats, pos_3d = torch.split(sampled_feats, 128, dim=-1)
 
         mid_output = {}
         # mid_output.update({'reference_points': reference_points})
@@ -594,9 +651,16 @@ class SegSampling(nn.Module):
             reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
             reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2]) 
             sampled_feats = sampled_feats + pos_encoder(reference_points)
-        
-        # mid_output.update({'sample_points_cam': sample_points_cam})
-        return sampled_feats, pos_embed_2d, mid_output #sampling_offset[..., -1]
+            # pos_embed_2d = pos_embed_2d + pos_encoder(pos2posemb3d(reference_points, with_z=True))
+            
+        norm = torch.norm((reference_points - pos_3d), dim=-1)
+        weight = torch.exp(-self.alpha * norm**2).unsqueeze(-1)
+        # weight[weight < self.threshold] = 0
+        weight = torch.where(weight < self.threshold, torch.tensor(0.0, device=weight.device), weight)
+        sampled_feats = sampled_feats * weight
+        mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points, 'weight': weight})
+
+        return sampled_feats, mid_output #sampling_offset[..., -1]
     
 class AdaptiveMixing(nn.Module):
     """Adaptive Mixing"""
@@ -782,16 +846,34 @@ class PointCrossAttention(nn.Module):
     def __init__(self, embed_dims, num_points, num_heads=4, features_dim=128):
         super().__init__()
 
-        self.q_proj = nn.Linear(embed_dims, features_dim)
+        self.q_proj = nn.Linear(embed_dims, features_dim, bias=False)
         self.to_q = nn.Linear(features_dim, features_dim)
 
-        self.k_proj = nn.Linear(features_dim, features_dim)
+        self.k_proj = nn.Linear(features_dim, features_dim, bias=False)
         self.to_k = nn.Linear(features_dim, features_dim)
+        
+        # self.q_proj = nn.Linear(embed_dims, features_dim, bias=False)
+        # self.to_q = nn.Sequential(nn.LayerNorm(features_dim), nn.Linear(features_dim, features_dim))
 
+        # self.k_proj = nn.Sequential(
+        #     nn.LayerNorm(features_dim),
+        #     nn.GELU(),
+        #     nn.Linear(features_dim, features_dim, bias=False)
+        # )
+        # self.to_k = nn.Sequential(nn.LayerNorm(features_dim), nn.Linear(features_dim, features_dim))
+
+        # self.v_proj = nn.Sequential(
+        #     nn.LayerNorm(features_dim),
+        #     nn.GELU(),
+        #     nn.Linear(features_dim, features_dim, bias=False)
+        # )
+        # self.to_v = nn.Sequential(nn.LayerNorm(features_dim), nn.Linear(features_dim, features_dim))
+        
         self.heads = num_heads
         self.dim_head = features_dim // num_heads
         self.scale = self.dim_head ** -0.5
 
+        # self.out_proj = nn.Linear(features_dim, embed_dims)
         self.out_conv = nn.Sequential(
                 nn.Conv2d(num_points * features_dim, embed_dims * 4, 1),
                 nn.GELU(),
@@ -803,36 +885,97 @@ class PointCrossAttention(nn.Module):
     def forward(self, bev_query, sampled_feat, bev_pos_embed, pos_embed_2d):
         
         b, d, h, w = bev_query.shape
-        query = rearrange(bev_query, 'b d h w -> (b h w) 1 d')
+        q = rearrange(bev_query, 'b d h w -> (b h w) 1 d')
         bev_pos_embed = rearrange(bev_pos_embed, 'b h w d -> (b h w) 1 d')
-        key = rearrange(sampled_feat, 'b q g p d -> (b q g) p d')
+        sampled_feat = rearrange(sampled_feat, 'b q g p d -> (b q g) p d')
         pos_embed_2d = rearrange(pos_embed_2d, 'b q g p d -> (b q g) p d')
 
-        q = self.to_q(self.q_proj(query) + bev_pos_embed)
-        k = self.to_k(self.k_proj(key) + pos_embed_2d)
+        sampled_feat = self.k_proj(sampled_feat) + pos_embed_2d
+        q = self.to_q(self.q_proj(q) + bev_pos_embed)
+        # k = self.to_k(self.k_proj(sampled_feat) + pos_embed_2d)
+        k = self.to_k(sampled_feat)
+        # v = self.to_v(self.v_proj(sampled_feat))
 
         q = rearrange(q, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head) # (b h w m) 1 d
         k = rearrange(k, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head) # (b h w m) p d
-
+        # v = rearrange(v, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head) # (b h w m) p d
+        
         dot = self.scale * torch.einsum('b Q d, b K d -> b Q K', q, k) # (b h w m) 1 p
         att = dot.softmax(dim=-1)
-        # if h == 200:
+        # if h == 50:
         #     att_ = rearrange(att, '(b h w m) 1 p -> b h w m 1 p', h=h, w=w, b=b, m=self.heads)
-        #     y = 135
-        #     x = 55
+        #     y = 115 // 4
+        #     x = 64 // 4
         #     print("attention score",att_[0, y, x])
 
-        #     x = x+2
+        #     x = x + 1
         #     print("attention score",att_[0, y, x])
 
-        #     x = x+2
+        #     x = x + 1
         #     print("attention score",att_[0, y, x])
 
+        # a = torch.einsum('b Q K, b K d -> b Q d', att, v) # (b h w m) d
+        # att = att.squeeze(1).unsqueeze(-1)
+        # a = (att * v)
+        # print(a.shape)
+        # a = a.sum(1)
+        # a = rearrange(a, '(b q m) d -> b q (m d)', m=self.heads, b=b)
+        # z = self.out_proj(a)
+        # z = rearrange(z, 'b (h w) d -> b d h w', h=h, w=w)
         att = att.squeeze(1).unsqueeze(-1) # (b h w m) p 1
-
-        sampled_feat = rearrange(sampled_feat, 'b q g p (m d) -> (b q g m) p d', m=self.heads, d=self.dim_head)
+        sampled_feat = rearrange(sampled_feat, 'b p (m d) -> (b m) p d', m=self.heads, d=self.dim_head)
         sampled_feat = att * sampled_feat # (b h w m) p 1 * (b h w m) p d
         sampled_feat = rearrange(sampled_feat, '(b h w m) p d -> b (p m d) h w', h=h, w=w, b=b, m=self.heads)
         sampled_feat = self.out_conv(sampled_feat)
         
         return sampled_feat
+    
+class PointCrossAttention_2(nn.Module):
+    def __init__(self, embed_dims, num_points, num_heads=4, features_dim=128):
+        super().__init__()
+
+        self.q_proj = nn.Linear(embed_dims, features_dim, bias=False)
+        self.k_proj = nn.Linear(features_dim, features_dim, bias=False)
+        self.v_proj = nn.Linear(features_dim, features_dim, bias=False)
+        
+        self.attention = nn.MultiheadAttention(features_dim, num_heads, dropout=0.1, batch_first=True)
+        
+        self.out_conv = nn.Conv2d(features_dim, embed_dims, 3, padding=1)
+        
+    def forward(self, bev_query, sampled_feat, bev_pos_embed, pos_embed_2d):
+        
+        b, d, h, w = bev_query.shape
+        q = rearrange(bev_query, 'b d h w -> (b h w) 1 d')
+        bev_pos_embed = rearrange(bev_pos_embed, 'b h w d -> (b h w) 1 d')
+        sampled_feat = rearrange(sampled_feat, 'b q g p d -> (b q g) p d')
+        pos_embed_2d = rearrange(pos_embed_2d, 'b q g p d -> (b q g) p d')
+
+        q = self.q_proj(q)
+        k = self.k_proj(sampled_feat)
+        v = self.v_proj(sampled_feat)
+        
+        q, att = self.attention(q+bev_pos_embed, k+pos_embed_2d, v, average_attn_weights=False)
+        # if h == 50:
+        #     att_ = rearrange(att, '(b h w) m 1 p -> b h w m 1 p', h=h, w=w, b=b)
+        #     y = 115 // 4
+        #     x = 64 // 4
+        #     print("attention score",att_[0, y, x])
+
+        #     x = x + 1
+        #     print("attention score",att_[0, y, x])
+
+        #     x = x + 1
+        #     print("attention score",att_[0, y, x])
+        q = rearrange(q, '(b h w) 1 d -> b d h w', b=b, h=h, w=w)
+        q = self.out_conv(q)
+        return q, {'attention': att, 'bev_pos': bev_pos_embed, 'pos_embed_2d': pos_embed_2d}
+        
+class LayerNorm2d(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.in_permute = Rearrange('b c h w -> b h w c')
+        self.out_permute = Rearrange('b h w c -> b c h w')
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x):
+        return self.out_permute(self.norm(self.in_permute(x)))

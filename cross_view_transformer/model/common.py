@@ -242,3 +242,4 @@ class BEVEmbeddingDet(nn.Module):
         #   -> we need (x,y,z,w,h)
         # feat query:
         #   dim used for segmentation and bounding box refinement
+

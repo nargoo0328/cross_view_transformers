@@ -54,6 +54,7 @@ class PrepareChannel(nn.Module):
         out_c: Optional[int] = 128,
         mode="doubleconv",
         tail_mode="identity",
+        depth_num=0,
     ):
         super().__init__()
         assert mode in ["simpleconv", "doubleconv", "doubleconv_w_depth_layer"]
@@ -76,6 +77,18 @@ class PrepareChannel(nn.Module):
                 nn.InstanceNorm2d(interm_c),
                 nn.ReLU(inplace=True),
             )
+            if depth_num != 0:
+                self.depth_layers = nn.Sequential(
+                    nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
+                    nn.InstanceNorm2d(interm_c),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
+                    nn.InstanceNorm2d(interm_c),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(interm_c, depth_num, kernel_size=1, padding=0)
+                )
+            else:
+                self.depth_layers = None
 
         if tail_mode == "identity":
             self.tail = nn.Identity()
@@ -88,7 +101,12 @@ class PrepareChannel(nn.Module):
         return
 
     def forward(self, x):
-        return self.tail(self.layers(x))
+        if self.depth_layers is not None:
+            depth = self.depth_layers(x)
+        else:
+            depth = None
+            
+        return self.tail(self.layers(x)), depth
 
 
 class AGPNeck(nn.Module):
@@ -129,8 +147,8 @@ class AGPNeck(nn.Module):
         x = self.group_method(x)
 
         # Change channels of final input.
-        x = self.prepare_c_layer(x)
+        x, depth = self.prepare_c_layer(x)
         assert x.shape[1] == self.out_c
         if self.list_output:
-            return [x]
-        return x
+            return [x], depth
+        return x, depth
