@@ -16,40 +16,8 @@ from cross_view_transformer.util.box_ops import box_cxcywh_to_xyxy
 from .sparsebev import sampling_4d, inverse_sigmoid
 from .sparsebev import MLP as MLP_sparse
 from .PointBEV_gridsample import PositionalEncodingMap, MLP
-from .decoder import BEVDecoder
+from .decoder import BEVDecoder, DecoderBlock
 from .simple_bev import SimpleBEVDecoderLayer_pixel
-
-def pos2posemb3d(pos, num_pos_feats=64, temperature=10000, with_z=False):
-    scale = 2 * math.pi
-    pos = pos * scale
-    dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=pos.device)
-    dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
-    pos_x = pos[..., 0, None] / dim_t
-    pos_y = pos[..., 1, None] / dim_t
-    pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
-    pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
-
-    if with_z:
-        pos_z = pos[..., 2, None] / dim_t
-        pos_z = torch.stack((pos_z[..., 0::2].sin(), pos_z[..., 1::2].cos()), dim=-1).flatten(-2)
-        posemb = torch.cat((pos_x, pos_y, pos_z), dim=-1)
-    else:
-        posemb = torch.cat((pos_x, pos_y), dim=-1)
-    return posemb
-
-class SELayer(nn.Module):
-    def __init__(self, channels, act_layer=nn.GELU, gate_layer=nn.Sigmoid):
-        super().__init__()
-        self.conv_reduce = nn.Conv2d(channels, channels, 1)
-        self.act1 = act_layer()
-        self.conv_expand = nn.Conv2d(channels, channels, 1)
-        self.gate = gate_layer()
-
-    def forward(self, x, x_se):
-        x_se = self.conv_reduce(x_se)
-        x_se = self.act1(x_se)
-        x_se = self.conv_expand(x_se)
-        return x * self.gate(x_se)
     
 class SparseBEVSeg(nn.Module):
     def __init__(
@@ -188,7 +156,9 @@ class SparseBEVSeg(nn.Module):
         
         features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
         
-        pred_depth = self.pred_depth(features, lidar2img, depth)
+        if depth is not None:
+            pred_depth = self.pred_depth(features, lidar2img, depth)
+            features[0] = torch.cat((features[0], pred_depth), dim=2)
         # pos_embedding_2d = self.fpe(pos_embedding_2d.flatten(0,1), features[0].flatten(0,1)).view(features[0].size())
 
         # masks = features[0].new_zeros(
@@ -197,7 +167,7 @@ class SparseBEVSeg(nn.Module):
         # sin_embed = self.adapt_pos3d(sin_embed.flatten(0, 1)).view(features[0].size())
         # pos_embedding_2d = pos_embedding_2d + sin_embed
 
-        features[0] = torch.cat((features[0], pred_depth), dim=2)
+        # features[0] = torch.cat((features[0], pred_depth), dim=2)
         
         x, mid_output, inter_output = self.encoder(features, lidar2img)
         x = self.decoder(x)
@@ -208,7 +178,7 @@ class SparseBEVSeg(nn.Module):
             output['aux'] = inter_output_pred
 
         mid_output['inter_output'] = inter_output
-        mid_output['pred_depth'] = pred_depth
+        # mid_output['pred_depth'] = pred_depth
         output['mid_output'] = mid_output #.squeeze() # squeeze group dimension
 
         return output
@@ -256,17 +226,16 @@ class SegHead(nn.Module):
         self.w = start_W
         
         scale = H // start_H
-        # self.bev_query = nn.Embedding(start_H * start_W, self.embed_dims * scale) 
+        self.bev_query = nn.Embedding(start_H * start_W, self.embed_dims * scale) 
         # self.bev_query = nn.Embedding(200 * 200, self.embed_dims) 
 
     def forward(self, mlvl_feats, lidar2img):
         
         bs = lidar2img.shape[0]
 
-        # bev_query = rearrange(self.bev_query.weight, '(h w) d -> d h w', h=self.h, w=self.w)
-        # bev_query = rearrange(self.bev_query.weight, '(h w) d -> d h w', h=200, w=200)
-        # bev_query = repeat(bev_query, '... -> b ...', b=bs)
-        bev_query = None
+        bev_query = rearrange(self.bev_query.weight, '(h w) d -> d h w', h=self.h, w=self.w)
+        bev_query = repeat(bev_query, '... -> b ...', b=bs)
+        # bev_query = None
 
         # bev_query = torch.zeros((bs, self.embed_dims * 4, self.h, self.w)).to(lidar2img.device)
 
@@ -292,7 +261,7 @@ class SegTransformerDecoder(nn.Module):
             `LN`.
     """
 
-    def __init__(self, embed_dims, num_points=4, num_groups=1, num_layers=[1], num_levels=4, pc_range=[], h=0, w=0, scales=[1.0], up_scales=[], return_inter=False, **kwargs):
+    def __init__(self, embed_dims, num_points=4, num_groups=1, num_layers=[1], num_levels=4, pc_range=[], h=0, w=0, scales=[1.0], up_scales=[], return_inter=False, alpha=0.1, with_pos3d=False, with_features_proj=False, **kwargs):
         super().__init__()
 
         assert len(num_layers) == len(scales)
@@ -300,30 +269,20 @@ class SegTransformerDecoder(nn.Module):
         self.scale = scales
         self.num_groups = num_groups
         self.pc_range = pc_range
-        position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
-        # position_encoding = nn.Sequential(
-        #         nn.Linear(128 * 3 // 2, 128 * 4),
-        #         nn.GELU(),
-        #         nn.Linear(128 * 4, 128),
-        # )
-        # position_encoding = None
-        # position_encoding_bev = nn.Sequential(
-        #         nn.Linear(128 * 3 // 2, 128 * 4),
-        #         nn.GELU(),
-        #         nn.Linear(128 * 4, 128),
-        # )
+        position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2) if with_pos3d else None
+        feats_2d_projection = MLP(128, 256, 128, 1) if with_features_proj else None
         position_encoding_bev = None
-        # self.layer = nn.ModuleList([SegTransformerDecoderLayer(int(scale) * embed_dims, num_points, num_groups, num_levels, scale, pc_range, h, w, position_encoding, position_encoding_bev) for scale in self.scale])
-        # decoder_layers = list()
-        # for scale, up_scale in zip(self.scale, up_scales):
-        #     # decoder_layers.append(DecoderBlock(int(scale) * embed_dims, int(scale) * embed_dims // up_scale, up_scale, int(scale) * embed_dims, True))
-        #     decoder_layers.append(BEVDecoder(512, [256, 128]))
-        # self.decoder = nn.ModuleList(decoder_layers)
+        self.layer = nn.ModuleList([SegTransformerDecoderLayer(int(scale) * embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding, position_encoding_bev, feats_2d_projection, alpha) for scale in self.scale])
+        decoder_layers = list()
+        for scale, up_scale in zip(self.scale, up_scales):
+            decoder_layers.append(DecoderBlock(int(scale) * embed_dims, int(scale) * embed_dims // up_scale, up_scale, int(scale) * embed_dims, True))
+            # decoder_layers.append(BEVDecoder(512, [256, 128]))
+        self.decoder = nn.ModuleList(decoder_layers)
         self.return_inter = return_inter
 
-        self.first_stage = SimpleBEVDecoderLayer_pixel(embed_dims * 4, num_points, pc_range, h, w, position_encoding)
-        self.second_stage = SegTransformerDecoderLayer(embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding, position_encoding_bev)
-        self.decoder = BEVDecoder(512, [256, 128])
+        # self.first_stage = SimpleBEVDecoderLayer_pixel(embed_dims * 4, num_points, pc_range, h, w, position_encoding)
+        # self.second_stage = SegTransformerDecoderLayer(embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding, position_encoding_bev)
+        # self.decoder = BEVDecoder(512, [256, 128])
         
     def forward(self,
                 mlvl_feats, 
@@ -360,44 +319,45 @@ class SegTransformerDecoder(nn.Module):
         
         inter_output = []
         mid_outputs = {}
-        bev_feats, mid_output = self.first_stage(mlvl_feats, lidar2img, bev_pos, 4.0)
-        bev_feats = self.decoder(bev_feats)
-        mid_outputs[f"stage_{0}"] = mid_output
-        if self.return_inter:
-            inter_output.append(bev_feats)
 
-        bev_feats, mid_output = self.second_stage(
-                mlvl_feats, 
-                lidar2img,
-                bev_feats, 
-                bev_pos, 
-                1.0,
-                mode
-        )
-        if self.return_inter:
-            inter_output.append(bev_feats)
-        mid_outputs[f"stage_{1}"] = mid_output
+        # bev_feats, mid_output = self.first_stage(mlvl_feats, lidar2img, bev_pos, 4.0)
+        # bev_feats = self.decoder(bev_feats)
+        # mid_outputs[f"stage_{0}"] = mid_output
+        # if self.return_inter:
+        #     inter_output.append(bev_feats)
 
-        # for lid in range(len(self.num_layers)):
-        #     bev_query, mid_output = self.layer[lid](
+        # bev_feats, mid_output = self.second_stage(
         #         mlvl_feats, 
         #         lidar2img,
-        #         bev_query, 
+        #         bev_feats, 
         #         bev_pos, 
-        #         scale[lid],
-        #         mode,
-        #     )
-        #     if lid < len(self.decoder):
-        #         bev_query = self.decoder[lid](bev_query, bev_query)
-            
-        #     if self.return_inter:
-        #         inter_output.append(bev_query)
-        #     mid_outputs[f"stage_{lid}"] = mid_output
+        #         1.0,
+        #         mode
+        # )
+        # if self.return_inter:
+        #     inter_output.append(bev_feats)
+        # mid_outputs[f"stage_{1}"] = mid_output
 
-        return bev_feats, mid_outputs, inter_output
+        for lid in range(len(self.num_layers)):
+            bev_query, mid_output = self.layer[lid](
+                mlvl_feats, 
+                lidar2img,
+                bev_query, 
+                bev_pos, 
+                scale[lid],
+                mode,
+            )
+            if lid < len(self.decoder):
+                bev_query = self.decoder[lid](bev_query, bev_query)
+            
+            if self.return_inter:
+                inter_output.append(bev_query)
+            mid_outputs[f"stage_{lid}"] = mid_output
+
+        return bev_query, mid_outputs, inter_output
 
 class SegTransformerDecoderLayer(nn.Module):
-    def __init__(self, embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding, position_encoding_bev):
+    def __init__(self, embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding, position_encoding_bev, feats_2d_projection, alpha):
         super().__init__()
 
         self.embed_dims = embed_dims
@@ -405,6 +365,7 @@ class SegTransformerDecoderLayer(nn.Module):
         self.pc_range = pc_range
 
         self.position_encoder = position_encoding
+        self.feats_2d_projection = feats_2d_projection
         self.position_encoding_bev = position_encoding_bev
         # self.compressor = MLP(num_points * embed_dims, embed_dims * 4, embed_dims, 3, as_conv=True)
 
@@ -416,20 +377,20 @@ class SegTransformerDecoderLayer(nn.Module):
             # nn.Conv2d(embed_dims * 4, embed_dims, 1),
         )
 
-        # self.mid_conv = nn.Sequential(
-        #         nn.Conv2d(num_points * 128, embed_dims * 4, 1),
-        #         nn.GELU(),
-        #         nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
-        #         nn.GELU(),
-        #         nn.Conv2d(embed_dims * 4, embed_dims, 1),
-        # )
         self.mid_conv = nn.Sequential(
-                nn.Conv2d(128, 128 * 4, 3, padding=1, bias=False),
+                nn.Conv2d(num_points * 128, embed_dims * 4, 1),
                 nn.GELU(),
-                nn.Conv2d(128 * 4, 128 * 4, 1, bias=False),
+                nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
                 nn.GELU(),
-                nn.Conv2d(128 * 4, embed_dims, 3, padding=1, bias=False),
+                nn.Conv2d(embed_dims * 4, embed_dims, 1),
         )
+        # self.mid_conv = nn.Sequential(
+        #         nn.Conv2d(128, 128 * 4, 3, padding=1),
+        #         # nn.GELU(),
+        #         # nn.Conv2d(128 * 4, 128 * 4, 1),
+        #         nn.GELU(),
+        #         nn.Conv2d(128 * 4, embed_dims, 3, padding=1),
+        # )
         # self.cross_attn = PointCrossAttention_2(embed_dims, num_points)
 
         self.out_conv = nn.Sequential(
@@ -439,7 +400,7 @@ class SegTransformerDecoderLayer(nn.Module):
             # nn.GELU(),
             # nn.Conv2d(embed_dims, embed_dims, 1),
         )
-        self.sampling = SegSampling(embed_dims, num_groups=num_groups, num_points=num_points, num_levels=num_levels, pc_range=pc_range, h=h, w=w)
+        self.sampling = SegSampling(embed_dims, num_groups=num_groups, num_points=num_points, num_levels=num_levels, pc_range=pc_range, h=h, w=w, alpha=alpha)
         # self.ffn = MLP_sparse(embed_dims, embed_dims, embed_dims, 2)
 
         self.norm1 = nn.InstanceNorm2d(embed_dims)
@@ -490,12 +451,13 @@ class SegTransformerDecoderLayer(nn.Module):
             bev_pos,
             lidar2img,
             self.position_encoder,
+            self.feats_2d_projection,
             scale,
             mode,
         )
-        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b p (g c) h w', h=h, w=w, g=1)
-        sampled_feat = sampled_feat.sum(1)
-        # sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w) # b p d h w & b d h w & b Q d b K d
+        # sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b p (g c) h w', h=h, w=w, g=1)
+        # sampled_feat = sampled_feat.sum(1)
+        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w) # b p d h w & b d h w & b Q d b K d
         bev_query = bev_query + self.mid_conv(sampled_feat)
         
         # bev_pos_embed = self.position_encoding_bev(pos2posemb3d(bev_pos, with_z=True)) # b h w 2 -> b h w d
@@ -517,7 +479,7 @@ class SegTransformerDecoderLayer(nn.Module):
     
 class SegSampling(nn.Module):
     """Adaptive Spatio-temporal Sampling"""
-    def __init__(self, embed_dims, num_groups=1, num_points=8, num_levels=1, pc_range=[], h=0, w=0, eps=1e-6):
+    def __init__(self, embed_dims, num_groups=1, num_points=8, num_levels=1, pc_range=[], h=0, w=0, eps=1e-6, alpha=0.1):
         super().__init__()
 
         self.num_points = num_points
@@ -537,8 +499,8 @@ class SegSampling(nn.Module):
         # self.z_pred = nn.Conv2d(embed_dims, 2, 1) # predict height & length
         self.scale_weights = nn.Conv2d(embed_dims, num_groups * num_points * num_levels, 1) if num_levels!= 1 else None
         self.eps = eps
-        # self.threshold = 0.1
-        self.alpha = 0.1
+        self.threshold = 0.1
+        self.alpha = alpha
 
     def init_weights(self):
         # original
@@ -569,7 +531,7 @@ class SegSampling(nn.Module):
         # with torch.no_grad():
         #     self.sampling_offset.bias = nn.Parameter(grid_init.view(-1))
 
-    def forward(self, query, mlvl_feats, reference_points, lidar2img, pos_encoder=None, scale=1.0, mode='grid'):
+    def forward(self, query, mlvl_feats, reference_points, lidar2img, pos_encoder=None, feats_2d_projection=None, scale=1.0, mode='grid'):
 
         # 2d sampling offset 
         if mode == 'grid': 
@@ -662,29 +624,36 @@ class SegSampling(nn.Module):
 
         if sampled_feats.shape[-1] != 128:
             sampled_feats, pos_3d = torch.split(sampled_feats, 128, dim=-1)
-            # sampled_feats = self.projection(sampled_feats)
-            norm = torch.norm((reference_points - pos_3d), dim=-1)
-            weight = torch.exp(-self.alpha * norm**2).unsqueeze(-1)
-            # weight[weight < self.threshold] = 0
-            # weight = torch.where(weight < self.threshold, torch.tensor(0.0, device=weight.device), weight)
-            sampled_feats = sampled_feats * weight
 
+            if feats_2d_projection is not None:
+                sampled_feats = feats_2d_projection(sampled_feats)
+
+            norm = torch.norm((reference_points - pos_3d), dim=-1)
+            weight = torch.exp(-self.alpha * norm ** 2).unsqueeze(-1)
+            # weight = torch.where(weight < self.threshold, 0.0, weight)
+            # weight = torch.where(weight < self.threshold, 0.0, weight)
+            sampled_feats = sampled_feats * weight
+        else:
+            pos_3d = None
+            weight = None
+            
         mid_output = {}
-        mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points, 'weight': weight})
+        mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points.clone(), 'weight': weight})
 
         if pos_encoder is not None:
             # normalized back
-            # reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
-            # reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
-            # reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2]) 
+            reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
+            reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
+            reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2]) 
+            sampled_feats = sampled_feats + pos_encoder(reference_points)
+ 
+            # pos_3d_normalized = pos_3d.clone()
+            # pos_3d_normalized[..., 0:1] = (pos_3d_normalized[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
+            # pos_3d_normalized[..., 1:2] = (pos_3d_normalized[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
+            # pos_3d_normalized[..., 2:3] = (pos_3d_normalized[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2]) 
+            # pos_3d_normalized = torch.clamp(pos_3d_normalized, min=0.0, max=1.0)
+            # sampled_feats = sampled_feats + pos_encoder(pos_3d_normalized)
 
-            pos_3d_normalized = pos_3d.clone()
-            pos_3d_normalized[..., 0:1] = (pos_3d_normalized[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
-            pos_3d_normalized[..., 1:2] = (pos_3d_normalized[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
-            pos_3d_normalized[..., 2:3] = (pos_3d_normalized[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2]) 
-            pos_3d_normalized = torch.clamp(pos_3d_normalized, min=0.0, max=1.0)
-            
-            sampled_feats = sampled_feats + pos_encoder(pos_3d_normalized)
             # pos_embed_2d = pos_embed_2d + pos_encoder(pos2posemb3d(reference_points, with_z=True))
         
         # mid_output = {}
