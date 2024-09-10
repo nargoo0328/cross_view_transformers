@@ -8,6 +8,8 @@ from torchvision.models.resnet import resnet18
 from cross_view_transformer.util.box_ops import box_cxcywh_to_xyxy
 from .layers import LayerNorm2d
 
+norm = nn.InstanceNorm2d # LayerNorm2d nn.InstanceNorm2d
+
 class DecoderBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, factor, skip_dim=0, residual=False):
         super().__init__()
@@ -17,10 +19,10 @@ class DecoderBlock(torch.nn.Module):
         self.conv = nn.Sequential(
             nn.Upsample(scale_factor=factor, mode='bilinear', align_corners=False),
             nn.Conv2d(in_channels, dim, 3, padding=1, bias=False),
-            LayerNorm2d(dim),
+            nn.BatchNorm2d(dim),
             nn.ReLU(inplace=True),
             nn.Conv2d(dim, out_channels, 1, padding=0, bias=False),
-            LayerNorm2d(out_channels))
+            nn.BatchNorm2d(out_channels))
 
         if residual:
             self.up = nn.Conv2d(skip_dim, out_channels, 1)
@@ -265,7 +267,7 @@ class BevEncode(nn.Module):
             nn.Upsample(scale_factor=2, mode='bilinear',
                               align_corners=True),
             nn.Conv2d(256, in_channels, kernel_size=3, padding=1, bias=False),
-            LayerNorm2d(in_channels),
+            norm(in_channels),
             # nn.ReLU(inplace=True),
             # nn.Conv2d(128, outC, kernel_size=1, padding=0),
         )
@@ -332,7 +334,7 @@ class SegHead(nn.Module):
                 for k, (start, stop) in outputs.items():
                     layer_dict[k] = nn.Sequential(
                     nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
-                    LayerNorm2d(dim_last),
+                    norm(dim_last),
                     nn.GELU(),
                     nn.Conv2d(dim_last, stop-start, 1)
                 )
@@ -340,7 +342,7 @@ class SegHead(nn.Module):
             else:
                 self.to_logits = nn.Sequential(
                     nn.Conv2d(dim_last, dim_last, 3, padding=1, bias=False),
-                    LayerNorm2d(dim_last),
+                    norm(dim_last),
                     nn.GELU(),
                     nn.Conv2d(dim_last, dim_max, 1)
                 )

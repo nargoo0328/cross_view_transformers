@@ -244,13 +244,13 @@ class BaseViz:
         right = self.visuaulize_pred(pred, view, threshold)
 
         aux_list = []
-        # if 'aux' in pred_dict:
-        #     for aux_pred in pred_dict['aux']:
-        #         tmp = list()
-        #         for k in self.key:
-        #             tmp.append(aux_pred[k][b].detach().cpu().sigmoid())
-        #         pred = torch.cat(tmp, dim=1)
-        #         aux_list.append(self.visuaulize_pred(pred, view, threshold))
+        if 'aux' in pred_dict:
+            for aux_pred in pred_dict['aux']:
+                tmp = list()
+                for k in self.key:
+                    tmp.append(aux_pred[k][b].detach().cpu().sigmoid())
+                pred = torch.cat(tmp, dim=1)
+                aux_list.append(self.visuaulize_pred(pred, view, threshold))
 
         return [right] + aux_list
     

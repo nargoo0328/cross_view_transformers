@@ -181,7 +181,7 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
         alpha=-1.0,
         gamma=2.0,
         key='bev',
-        aux_weight=0.01,
+        aux_weight=0.1,
     ):
         super().__init__(alpha=alpha, gamma=gamma, reduction='none')
         
