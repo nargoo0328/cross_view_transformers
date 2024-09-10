@@ -377,20 +377,20 @@ class SegTransformerDecoderLayer(nn.Module):
             # nn.Conv2d(embed_dims * 4, embed_dims, 1),
         )
 
-        self.mid_conv = nn.Sequential(
-                nn.Conv2d(num_points * 128, embed_dims * 4, 1),
-                nn.GELU(),
-                nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
-                nn.GELU(),
-                nn.Conv2d(embed_dims * 4, embed_dims, 1),
-        )
         # self.mid_conv = nn.Sequential(
-        #         nn.Conv2d(128, 128 * 4, 3, padding=1),
-        #         # nn.GELU(),
-        #         # nn.Conv2d(128 * 4, 128 * 4, 1),
+        #         nn.Conv2d(num_points * 128, embed_dims * 4, 1),
         #         nn.GELU(),
-        #         nn.Conv2d(128 * 4, embed_dims, 3, padding=1),
+        #         nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
+        #         nn.GELU(),
+        #         nn.Conv2d(embed_dims * 4, embed_dims, 1),
         # )
+        self.mid_conv = nn.Sequential(
+                nn.Conv2d(128, 128 * 4, 3, padding=1),
+                # nn.GELU(),
+                # nn.Conv2d(128 * 4, 128 * 4, 1),
+                nn.GELU(),
+                nn.Conv2d(128 * 4, embed_dims, 3, padding=1),
+        )
         # self.cross_attn = PointCrossAttention_2(embed_dims, num_points)
 
         self.out_conv = nn.Sequential(
@@ -455,9 +455,9 @@ class SegTransformerDecoderLayer(nn.Module):
             scale,
             mode,
         )
-        # sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b p (g c) h w', h=h, w=w, g=1)
-        # sampled_feat = sampled_feat.sum(1)
-        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w) # b p d h w & b d h w & b Q d b K d
+        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b p (g c) h w', h=h, w=w, g=1)
+        sampled_feat = sampled_feat.sum(1)
+        # sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w) # b p d h w & b d h w & b Q d b K d
         bev_query = bev_query + self.mid_conv(sampled_feat)
         
         # bev_pos_embed = self.position_encoding_bev(pos2posemb3d(bev_pos, with_z=True)) # b h w 2 -> b h w d
@@ -638,7 +638,7 @@ class SegSampling(nn.Module):
             weight = None
             
         mid_output = {}
-        mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points.clone(), 'weight': weight})
+        # mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points.clone(), 'weight': weight})
 
         if pos_encoder is not None:
             # normalized back
