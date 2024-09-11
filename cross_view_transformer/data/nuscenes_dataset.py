@@ -488,37 +488,20 @@ class NuScenesDataset(torch.utils.data.Dataset):
         return radar_map, out_lidar
     
     def get_lidar(self, sample):
-        from nuscenes.utils.data_classes import LidarPointCloud
         sample_rec = self.nusc.get('sample', sample['token'])
-        min_distance = 1.0
 
         sample_data_token = sample_rec['data']['LIDAR_TOP']
         current_sd_rec = self.nusc.get('sample_data', sample_data_token)
+        lidar_file = os.path.join(self.nusc.dataroot, current_sd_rec['filename'])
         # Load up the pointcloud and remove points close to the sensor.
-        current_pc = LidarPointCloud.from_file(os.path.join(self.nusc.dataroot, current_sd_rec['filename']))
-        current_pc.remove_close(min_distance)
+        # current_pc = LidarPointCloud.from_file(os.path.join(self.nusc.dataroot, current_sd_rec['filename']))
+        # current_pc.remove_close(min_distance)
 
         # Homogeneous transformation matrix from sensor coordinate frame to ego car frame.
         current_cs_rec = self.nusc.get('calibrated_sensor', current_sd_rec['calibrated_sensor_token'])
         car_from_current = self.parse_pose(current_cs_rec)
 
-        current_pc.transform(car_from_current)
-
-        out_lidar = current_pc.points
-        V = self.view
-        S = np.array([
-                    [1, 0, 0, 0],
-                    [0, 1, 0, 0],
-                    [0, 0, 0, 1],
-                ])
-        z = np.array(out_lidar[2,:])
-        out_lidar[:3] = V @ S @ np.vstack((out_lidar[:3],np.ones(out_lidar.shape[1])))
-        out_lidar[2,:] = z
-        mask = mask_out(out_lidar)
-        out_lidar = out_lidar[:,mask]
-        lidar_map = np.zeros((200,200,3),dtype=float)
-        lidar_map[(out_lidar[1,:].astype(int)),(out_lidar[0,:].astype(int))] = np.transpose(np.vstack((np.ones((1,out_lidar.shape[1]),dtype=float),out_lidar[2:,:])))
-        return lidar_map, os.path.join(self.nusc.dataroot, current_sd_rec['filename']), current_cs_rec
+        return lidar_file, car_from_current.tolist()
     
     def get_gt_box(self, lidar_record, anns_by_category):
         from nuscenes.utils import data_classes

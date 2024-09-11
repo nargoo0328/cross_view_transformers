@@ -144,10 +144,7 @@ class SaveDataTransform:
             result['radar'] = radar_path
 
         if batch.get('lidar') is not None:
-            lidar_path = f'lidar_{batch.token}.npz'
-            lidar_bev, lidar_pts_path, lidar_pose = batch.lidar
-            np.savez_compressed(scene_dir / lidar_path, lidar=lidar_bev)
-            result['lidar'] = lidar_path
+            lidar_pts_path, lidar_pose = batch.lidar
             result['lidar_pose'] = lidar_pose
             result['lidar_pts'] = lidar_pts_path
         
@@ -336,43 +333,13 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         return result
     
     def get_lidar(self, sample: Sample):
-        T = 10
-
-        def preprocess(lidar):
-        # shuffling the points
-            np.random.shuffle(lidar)
-
-            voxel_coords = ((lidar[:, :3] - np.array([-50, -50, -5])) / (
-                            0.1, 0.1, 0.2)).astype(int)
-
-            # convert to  (D, H, W)
-            voxel_coords = voxel_coords[:,[2,1,0]]
-            voxel_coords, inv_ind, voxel_counts = np.unique(voxel_coords, axis=0, \
-                                                    return_inverse=True, return_counts=True)
-
-            voxel_features = []
-
-            for i in range(len(voxel_coords)):
-                voxel = np.zeros((T, 7), dtype=np.float32)
-                pts = lidar[inv_ind == i]
-                if voxel_counts[i] > T:
-                    pts = pts[:T, :]
-                    voxel_counts[i] = T
-                # augment the points
-                voxel[:pts.shape[0], :] = np.concatenate((pts, pts[:, :3] - np.mean(pts[:, :3], 0)), axis=1)
-                voxel_features.append(voxel)
-            return np.array(voxel_features), voxel_coords
-        
-        def shuffle(arr):
-            return np.random.randint(len(arr),size=MAX_PTS)
         
         from nuscenes.utils.data_classes import LidarPointCloud
-        from .common import get_pose
-
-        current_pc = LidarPointCloud.from_file(sample['lidar_pose'])
+        current_pc = LidarPointCloud.from_file(sample['lidar_pts'])
         current_pc.remove_close(1.0)
-        current_pc.transform(get_pose(sample['lidar_pts']['rotation'], sample['lidar_pts']['translation']))
-        pts = np.transpose(current_pc.points)
+        pose = np.float32(sample['lidar_pose'])
+        current_pc.transform(pose)
+        pts = current_pc.points[:3]
         # lidar, voxel_coords = preprocess(pts)
         # idx = shuffle(lidar)
         # lidar, voxel_coords = lidar[idx], voxel_coords[idx]
@@ -632,6 +599,61 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         
         return {'labels':labels, 'boxes':boxes.astype(np.float32)}
 
+    def get_depth(self, result, bev_augm):
+
+        def fill_zeros_with_nearest(data):
+            # Step 1: Identify zeros in the data
+            zero_mask = data == 0
+            # Step 2: Create an initial distance map where non-zero values have a distance of 0
+            # Invert the mask: non-zero -> 0, zero -> 1
+            # distance_map = zero_mask.float()
+            # Step 3: Use convolution to propagate nearest non-zero values
+            for _ in range(10):
+                # Apply a convolution with a kernel of all ones
+                # conv_filter = torch.ones(1, 1, 3, 3, device=data.device)
+                # propagated_data = F.conv2d(data.unsqueeze(1), conv_filter, padding=1).squeeze(1)
+                # propagated_count = F.conv2d(distance_map.unsqueeze(1), conv_filter, padding=1).squeeze(1)
+                # # Avoid division by zero by masking out zero locations
+                # propagated_count[propagated_count == 0] = 1  # Avoid division by zero
+                # new_data = propagated_data / propagated_count
+
+                # # Step 4: Update the data where it was zero
+                # data[zero_mask] = new_data[zero_mask]
+
+                dilated_data = F.max_pool2d(data.unsqueeze(1), kernel_size=3, stride=1, padding=1).squeeze(1)
+        
+                # Update the data: only replace zeros with the dilated values
+                data[zero_mask] = dilated_data[zero_mask]
+                zero_mask = data == 0
+
+            return data
+        
+        N, _, H, W = result['image'].shape
+        lidar_points = result['lidar']
+        lidar2img = result['lidar2img'] # N 4 4
+        lidar2img = lidar2img @ bev_augm.inverse()
+
+        lidar_points = torch.from_numpy(lidar_points) # 4 P
+        lidar_points = torch.cat([lidar_points, torch.ones_like(lidar_points[0:1])], dim=0)
+        lidar_points = torch.matmul(lidar2img, lidar_points)[:, :3] # N 3 P
+        depth = lidar_points[:, 2:3]
+        homo_nonzero = torch.maximum(depth, torch.zeros_like(depth) + 1e-6)
+        lidar_points = lidar_points[:, 0:2] / homo_nonzero
+        valid_mask = ((depth > 1e-6) \
+            & (lidar_points[:, 1:2] > 1)
+            & (lidar_points[:, 1:2] < H - 1)
+            & (lidar_points[:, 0:1] > 1)
+            & (lidar_points[:, 0:1] < W - 1)
+        )
+
+        depth_cam = torch.zeros((N, H, W))
+        for i in range(N):
+            lidar_points_camera = lidar_points[i][:, valid_mask[i,0]]
+            lidar_points_camera = torch.round(lidar_points_camera).int()
+            depth_cam[i, lidar_points_camera[1], lidar_points_camera[0]] = depth[i][0, valid_mask[i,0]]
+        
+        return {'depth': fill_zeros_with_nearest(depth_cam)}
+    
     def __call__(self, batch):
         if not isinstance(batch, Sample):
             batch = Sample(**batch)
@@ -673,10 +695,12 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             bev_augm = torch.from_numpy(bev_augm)
             result['extrinsics'] = result['extrinsics'] @ bev_augm
             result['lidar2img'] = result['lidar2img'] @ bev_augm
+            result['bev_augm'] = bev_augm
             # result = self._parse_bev_augm(result, bev_augm)
             # result['bev_augm'] = bev_augm
 
         if self.lidar:
             result.update(self.get_lidar(batch))
+            result.update(self.get_depth(result, bev_augm))
 
         return result

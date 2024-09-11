@@ -60,6 +60,7 @@ class RandomTransformImage(object):
             img = self.pil_preprocess_from_affine_mat(img, ida_mat, final_dims)
             results['image'][i] = self.transform(img) # np.array(img).astype(np.uint8)
             results['intrinsics'][i] = torch.tensor(ida_mat @ results['intrinsics'][i])
+            results['ida_mat'] = torch.tensor(ida_mat)
 
         return results
 

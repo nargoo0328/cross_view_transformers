@@ -2,6 +2,7 @@ from typing import Iterable, Optional
 
 import torch
 import torch.nn as nn
+from torchvision.models.resnet import BasicBlock, Bottleneck
 
 class AlignRes(nn.Module):
     """Align resolutions of the outputs of the backbone."""
@@ -79,12 +80,15 @@ class PrepareChannel(nn.Module):
             )
             if depth_num != 0:
                 self.depth_layers = nn.Sequential(
-                    nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
-                    nn.InstanceNorm2d(interm_c),
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
-                    nn.InstanceNorm2d(interm_c),
-                    nn.ReLU(inplace=True),
+                    # nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
+                    # nn.InstanceNorm2d(interm_c),
+                    # nn.ReLU(inplace=True),
+                    # nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
+                    # nn.InstanceNorm2d(interm_c),
+                    # nn.ReLU(inplace=True),
+                    BasicBlock(interm_c, interm_c),
+                    BasicBlock(interm_c, interm_c),
+                    BasicBlock(interm_c, interm_c),
                     nn.Conv2d(interm_c, depth_num, kernel_size=1, padding=0)
                 )
             else:

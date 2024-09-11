@@ -35,6 +35,7 @@ class SparseBEVSeg(nn.Module):
             sparse=False,
             pc_range=None,
             aux=False,
+            input_depth=False,
     ):
         super().__init__()
     
@@ -52,6 +53,7 @@ class SparseBEVSeg(nn.Module):
         self.fusion = fusion
         self.sparse = sparse
         self.aux = aux
+        self.input_depth = input_depth
 
         self.pc_range = pc_range
         self.depth_num = 64
@@ -98,16 +100,6 @@ class SparseBEVSeg(nn.Module):
         img2lidars = img2lidars.view(B, N, 1, 1, 1, 4, 4).repeat(1, 1, W, H, D, 1, 1)
         coords3d = torch.matmul(img2lidars, coords).squeeze(-1)[..., :3] # B N W H D 3
 
-        # coords3d[..., 0:1] = (coords3d[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
-        # coords3d[..., 1:2] = (coords3d[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
-        # coords3d[..., 2:3] = (coords3d[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2])
-        # coords_mask = (coords3d > 1.0) | (coords3d < 0.0) 
-        # coords_mask = coords_mask.flatten(-2).sum(-1) > (D * 0.5)
-        # coords_mask = masks | coords_mask.permute(0, 1, 3, 2)
-        # coords3d = coords3d.permute(0, 1, 4, 5, 3, 2).contiguous().view(B*N, -1, H, W)
-        # coords3d = inverse_sigmoid(coords3d)
-        # coords_position_embeding = self.position_encoder(coords3d)
-
         return coords3d
     
     def pred_depth(self, img_feats, lidar2img, depth):
@@ -116,32 +108,36 @@ class SparseBEVSeg(nn.Module):
         # img_feats = rearrange(img_feats[0], 'b n d h w -> (b n) d h w')
         depth = depth.softmax(1) # (b n) depth h w
         
-        # depth_index = torch.argmax(depth, dim=1)[..., None] # 
-        # depth_index = rearrange(depth_index, '(b n) h w 1 -> b n w h 1', b=b, n=n)
-        
-        # i_batch = torch.arange(b, dtype=torch.long, device=depth_index.device)
-        # i_cam = torch.arange(n, dtype=torch.long, device=depth_index.device)
-        # i_h = torch.arange(h, dtype=torch.long, device=depth_index.device)
-        # i_w = torch.arange(w, dtype=torch.long, device=depth_index.device)
-        # i_batch = i_batch.view(b, 1, 1, 1, 1).expand(b, n, w, h, 1)
-        # i_cam = i_cam.view(1, n, 1, 1, 1).expand(b, n, w, h, 1)
-        # i_h = i_h.view(1, 1, 1, h, 1).expand(b, n, w, h, 1)
-        # i_w = i_w.view(1, 1, w, 1, 1).expand(b, n, w, h, 1)
-    
-        # coords_3d = coords_3d[i_batch, i_cam, i_w, i_h, depth_index] # b n w h 1 3
-        # coords_3d = rearrange(coords_3d, 'b n w h 1 c -> b n c h w')
-        
-        # Step 3: Rearrange coords_3d to match the depth dimension layout
         coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
-        
-        # Step 4: Perform a weighted sum over the depth dimension using the softmax probabilities
         depth = depth.unsqueeze(-1)  # (b n) depth h w 1
         coords_3d = (depth * coords_3d).sum(1)  # (b n) h w 3
-        
-        # Step 5: Reshape coords_3d to match the original feature map shape
         coords_3d = rearrange(coords_3d, '(b n) h w d-> b n d h w', b=b, n=n)
         return coords_3d
+    
+    def get_pixel_depth(self, depth, img_feats, lidar2img):
+        eps = 1e-6
+
+        B, N, C, H, W = img_feats[0].shape
+
+        depth = F.interpolate(depth, size=[H,W])
+        depth = depth.permute(0,1,3,2).unsqueeze(-1)
+
+        coords_h = torch.arange(H, device=img_feats[0].device).float() * 224 / H
+        coords_w = torch.arange(W, device=img_feats[0].device).float() * 480 / W
+        coords = torch.stack(torch.meshgrid([coords_w, coords_h])).permute(1, 2, 0)[None,None] # W, H, 2
+        coords = coords.expand(B, N, W, H, 2)
+
+        coords = torch.cat((coords, depth), dim=-1)
+        coords = torch.cat((coords, torch.ones_like(coords[..., :1])), dim=-1)
+        coords[..., :2] = coords[..., :2] * torch.maximum(coords[..., 2:3], torch.ones_like(coords[..., 2:3])*eps)
         
+        img2lidars = lidar2img.inverse() # b n 4 4
+        coords = coords.unsqueeze(-1)
+        # coords = coords.view(1, 1, W, H, 4, 1).repeat(B, N, 1, 1, 1, 1)
+        img2lidars = img2lidars.view(B, N, 1, 1, 4, 4).repeat(1, 1, W, H, 1, 1)
+        coords3d = torch.matmul(img2lidars, coords).squeeze(-1)[..., :3] # B N W H 3
+        return coords3d.permute(0,1,4,3,2)
+
     def forward(self, batch):
         b, n, _, _, _ = batch['image'].shape
         image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
@@ -159,6 +155,10 @@ class SparseBEVSeg(nn.Module):
         if depth is not None:
             pred_depth = self.pred_depth(features, lidar2img, depth)
             features[0] = torch.cat((features[0], pred_depth), dim=2)
+
+        elif self.input_depth:
+            gt_depth = self.get_pixel_depth(batch['depth'], features, lidar2img)
+            features[0] = torch.cat((features[0], gt_depth), dim=2)
         # pos_embedding_2d = self.fpe(pos_embedding_2d.flatten(0,1), features[0].flatten(0,1)).view(features[0].size())
 
         # masks = features[0].new_zeros(
@@ -270,7 +270,7 @@ class SegTransformerDecoder(nn.Module):
         self.num_groups = num_groups
         self.pc_range = pc_range
         position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2) if with_pos3d else None
-        feats_2d_projection = MLP(128, 256, 128, 1) if with_features_proj else None
+        feats_2d_projection = MLP(128, 256, 128, 2) if with_features_proj else None
         position_encoding_bev = None
         self.layer = nn.ModuleList([SegTransformerDecoderLayer(int(scale) * embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding, position_encoding_bev, feats_2d_projection, alpha) for scale in self.scale])
         decoder_layers = list()
@@ -638,7 +638,7 @@ class SegSampling(nn.Module):
             weight = None
             
         mid_output = {}
-        # mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points.clone(), 'weight': weight})
+        mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points.clone(), 'weight': weight})
 
         if pos_encoder is not None:
             # normalized back

@@ -1,5 +1,6 @@
 _target_: cross_view_transformer.model.sparsebev_seg.SparseBEVSeg
 
+input_depth: True
 backbone:
   # _target_: cross_view_transformer.model.backbones.timm_backbones.TimmBackbone
 
@@ -15,7 +16,7 @@ backbone:
   image_width: ${data.image.w}
   # return_list: ["reduction_2", "reduction_3", "reduction_4"]
   return_list: ["reduction_3", "reduction_4"]
-  checkpoint: True
+  # checkpoint: True
 
 neck:
   _target_: cross_view_transformer.model.backbones.agp.AGPNeck
@@ -33,7 +34,7 @@ neck:
     in_channels: [56, 160]
     mode: "doubleconv"
     tail_mode: "conv2d"
-    depth_num: 64
+    # depth_num: 64
   
   list_output: True
 
@@ -68,7 +69,7 @@ encoder:
     num_points: 8
     with_pos3d: True
     alpha: 0.1
-    with_features_proj: True
+    with_features_proj: False
 
 decoder:
   # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
