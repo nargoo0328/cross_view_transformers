@@ -73,20 +73,20 @@ class SparseBEVSeg(nn.Module):
         # self.depth = nn.Conv2d(128, self.depth_num, 1)
         self.LID = True
 
-    def get_pixel_coords_3d(self, img_feats, lidar2img):
+    def get_pixel_coords_3d(self, depth, lidar2img):
         eps = 1e-5
         
-        B, N, C, H, W = img_feats[0].shape
-        coords_h = torch.arange(H, device=img_feats[0].device).float() * 224 / H
-        coords_w = torch.arange(W, device=img_feats[0].device).float() * 480 / W
+        B, N, C, H, W = depth.shape
+        coords_h = torch.arange(H, device=depth[0].device).float() * 224 / H
+        coords_w = torch.arange(W, device=depth[0].device).float() * 480 / W
 
         if self.LID:
-            index  = torch.arange(start=0, end=self.depth_num, step=1, device=img_feats[0].device).float()
+            index  = torch.arange(start=0, end=self.depth_num, step=1, device=depth.device).float()
             index_1 = index + 1
             bin_size = (self.pc_range[3] - self.depth_start) / (self.depth_num * (1 + self.depth_num))
             coords_d = self.depth_start + bin_size * index * index_1
         else:
-            index  = torch.arange(start=0, end=self.depth_num, step=1, device=img_feats[0].device).float()
+            index  = torch.arange(start=0, end=self.depth_num, step=1, device=depth.device).float()
             bin_size = (self.pc_range[3] - self.depth_start) / self.depth_num
             coords_d = self.depth_start + bin_size * index
 
@@ -100,19 +100,21 @@ class SparseBEVSeg(nn.Module):
         img2lidars = img2lidars.view(B, N, 1, 1, 1, 4, 4).repeat(1, 1, W, H, D, 1, 1)
         coords3d = torch.matmul(img2lidars, coords).squeeze(-1)[..., :3] # B N W H D 3
 
-        return coords3d
+        return coords3d, coords_d
     
-    def pred_depth(self, img_feats, lidar2img, depth):
-        b, n, c, h, w = img_feats[0].shape
-        coords_3d = self.get_pixel_coords_3d(img_feats, lidar2img) # b n w h d 3
+    def pred_depth(self, lidar2img, depth):
+        b, n, c, h, w = depth.shape
+        coords_3d, coords_d = self.get_pixel_coords_3d(depth, lidar2img) # b n w h d 3
         # img_feats = rearrange(img_feats[0], 'b n d h w -> (b n) d h w')
+        depth = rearrange(depth, 'b n ... -> (b n) ...')
         depth = depth.softmax(1) # (b n) depth h w
+        pred_depth = (depth * coords_d.view(1, self.depth_num, 1, 1)).sum(1)
         
         coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
         depth = depth.unsqueeze(-1)  # (b n) depth h w 1
         coords_3d = (depth * coords_3d).sum(1)  # (b n) h w 3
         coords_3d = rearrange(coords_3d, '(b n) h w d-> b n d h w', b=b, n=n)
-        return coords_3d
+        return coords_3d, pred_depth
     
     def get_pixel_depth(self, depth, img_feats, lidar2img):
         eps = 1e-6
@@ -143,7 +145,9 @@ class SparseBEVSeg(nn.Module):
         image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
         lidar2img = batch['lidar2img']
         features = self.backbone(self.norm(image))
-
+        # import copy
+        # features_ = copy.deepcopy(features)
+        # features = features[2:]
         if self.neck is not None:
             features, depth = self.neck(features)
         
@@ -151,10 +155,13 @@ class SparseBEVSeg(nn.Module):
             features = self.pos_encoder_2d(features)
         
         features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
-        
+        # depth_ = depth
+        # features_ = features[0].clone()
         if depth is not None:
-            pred_depth = self.pred_depth(features, lidar2img, depth)
-            features[0] = torch.cat((features[0], pred_depth), dim=2)
+            depth = rearrange(depth,'(b n) ... -> b n ...', b=b,n=n)
+            pred_coords_3d, pred_depth = self.pred_depth(lidar2img, depth)
+            features.append(pred_coords_3d)
+            # features[0] = torch.cat((features[0], pred_depth), dim=2)
 
         elif self.input_depth:
             gt_depth = self.get_pixel_depth(batch['depth'], features, lidar2img)
@@ -178,7 +185,9 @@ class SparseBEVSeg(nn.Module):
             output['aux'] = inter_output_pred
 
         mid_output['inter_output'] = inter_output
-        # mid_output['pred_depth'] = pred_depth
+        output['depth'] = pred_depth
+        # mid_output['features'] = features_
+
         output['mid_output'] = mid_output #.squeeze() # squeeze group dimension
 
         return output
@@ -270,7 +279,7 @@ class SegTransformerDecoder(nn.Module):
         self.num_groups = num_groups
         self.pc_range = pc_range
         position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2) if with_pos3d else None
-        feats_2d_projection = MLP(128, 256, 128, 2) if with_features_proj else None
+        feats_2d_projection = MLP(128, 256, 128, 1) if with_features_proj else None
         position_encoding_bev = None
         self.layer = nn.ModuleList([SegTransformerDecoderLayer(int(scale) * embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding, position_encoding_bev, feats_2d_projection, alpha) for scale in self.scale])
         decoder_layers = list()
@@ -612,7 +621,7 @@ class SegSampling(nn.Module):
             scale_weights = None  
 
         # sampling
-        sampled_feats, sample_points_cam = sampling_4d(
+        sampled_feats, pos_3d, sample_points_cam = sampling_4d(
             reference_points,
             mlvl_feats,
             scale_weights,
@@ -628,10 +637,33 @@ class SegSampling(nn.Module):
             if feats_2d_projection is not None:
                 sampled_feats = feats_2d_projection(sampled_feats)
 
+            # norm = torch.norm((reference_points - pos_3d), dim=-1)
+            # weight = torch.exp(-self.alpha * norm ** 2).unsqueeze(-1)
+
+            distance = torch.norm(reference_points.clone(), dim=-1) - torch.norm(pos_3d, dim=-1)
+            positive_mask = (distance >= 0).float()
+            negative_mask = (distance < 0).float()
+            gauss_positive = torch.exp(-0.1 * (distance / self.alpha) ** 2)
+            gauss_negative = torch.exp(-0.1 * (distance / 0.1) ** 2)
+            weight = (gauss_positive * positive_mask + gauss_negative * negative_mask).unsqueeze(-1)
+
+            # weight = torch.where(weight < self.threshold, 0.0, weight)
+            # weight = torch.where(weight < self.threshold, 0.0, weight)
+            sampled_feats = sampled_feats * weight
+        elif pos_3d is not None:
+            if feats_2d_projection is not None:
+                sampled_feats = feats_2d_projection(sampled_feats)
+                
             norm = torch.norm((reference_points - pos_3d), dim=-1)
             weight = torch.exp(-self.alpha * norm ** 2).unsqueeze(-1)
-            # weight = torch.where(weight < self.threshold, 0.0, weight)
-            # weight = torch.where(weight < self.threshold, 0.0, weight)
+
+            # distance = torch.norm(reference_points.clone(), dim=-1) - torch.norm(pos_3d, dim=-1)
+            # positive_mask = (distance >= 0).float()
+            # negative_mask = (distance < 0).float()
+            # gauss_positive = torch.exp(-0.1 * (distance / self.alpha) ** 2)
+            # gauss_negative = torch.exp(-0.1 * (distance / 0.4) ** 2)
+            # weight = (gauss_positive * positive_mask + gauss_negative * negative_mask).unsqueeze(-1)
+
             sampled_feats = sampled_feats * weight
         else:
             pos_3d = None

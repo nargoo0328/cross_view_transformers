@@ -1,7 +1,10 @@
 from typing import Iterable, Optional
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
+
+import torchvision
 from torchvision.models.resnet import BasicBlock, Bottleneck
 
 class AlignRes(nn.Module):
@@ -80,13 +83,12 @@ class PrepareChannel(nn.Module):
             )
             if depth_num != 0:
                 self.depth_layers = nn.Sequential(
-                    # nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
-                    # nn.InstanceNorm2d(interm_c),
-                    # nn.ReLU(inplace=True),
+                    nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
+                    nn.InstanceNorm2d(interm_c),
+                    nn.ReLU(inplace=True),
                     # nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
                     # nn.InstanceNorm2d(interm_c),
                     # nn.ReLU(inplace=True),
-                    BasicBlock(interm_c, interm_c),
                     BasicBlock(interm_c, interm_c),
                     BasicBlock(interm_c, interm_c),
                     nn.Conv2d(interm_c, depth_num, kernel_size=1, padding=0)
@@ -156,3 +158,83 @@ class AGPNeck(nn.Module):
         if self.list_output:
             return [x], depth
         return x, depth
+
+class Depth_Neck(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        scales,
+        embed_dims,
+        group_method=lambda x: torch.cat(x, dim=1),
+        return_index=0,
+        depth_num=0,
+    ):
+        super().__init__()
+        self.up_layers = nn.ModuleList()
+        scales_ = [scale // scales[return_index] for scale in scales[return_index:]]
+        for s in scales_:
+            if s != 1:
+                self.up_layers.append(
+                    nn.Upsample(
+                        scale_factor=s, mode="bilinear", align_corners=False
+                    )
+                )
+            else:
+                self.up_layers.append(nn.Identity())
+        self.group_method = group_method
+
+        # aggregate features for return index
+        self.return_index = return_index
+        in_c = sum(in_channels[return_index:])
+        self.layers = nn.Sequential(
+                nn.Conv2d(in_c, embed_dims, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(embed_dims), # InstanceNorm2d
+                nn.ReLU(inplace=True),
+                nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(embed_dims),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(embed_dims, embed_dims, kernel_size=1, padding=0)
+        )
+
+        # aggregate features for depth estimation on highest resolution
+        if depth_num > 0:
+            self.up_layers_depth = nn.ModuleList()
+            for s in scales:
+                if s != 1:
+                    self.up_layers_depth.append(
+                        nn.Upsample(
+                            scale_factor=s, mode="bilinear", align_corners=False
+                        )
+                    )
+                else:
+                    self.up_layers_depth.append(nn.Identity())
+    
+            in_c = sum(in_channels)
+            self.depth_layer = nn.Sequential(
+                nn.Conv2d(in_c, embed_dims, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(embed_dims),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(embed_dims),
+                nn.ReLU(inplace=True),
+                # BasicBlock(embed_dims, embed_dims),
+                # BasicBlock(embed_dims, embed_dims),
+                nn.Conv2d(embed_dims, depth_num, kernel_size=1, padding=0)
+        )
+        else:
+            self.depth_layer = None
+
+    def forward(self, x):
+        feats_x = x[self.return_index:]
+        feats_x = [self.up_layers[i](xi) for i, xi in enumerate(feats_x)]
+        feats_x = self.group_method(feats_x)
+        feats_x = self.layers(feats_x)
+
+        if self.depth_layer is not None:
+            depth = [self.up_layers_depth[i](xi) for i, xi in enumerate(x)]
+            depth = self.group_method(depth)
+            depth = self.depth_layer(depth)
+        else:
+            depth = None
+
+        return [feats_x], depth

@@ -1119,6 +1119,11 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
     """
     B, Q, G, P, _ = sample_points.shape  # [B, Q, G, P, 3]
     N = 6
+    if len(mlvl_feats) != 1:
+        pos_3d =[mlvl_feats[1]]
+        mlvl_feats = [mlvl_feats[0]]
+    else:
+        pos_3d = None
     L = len(mlvl_feats)
 
     sample_points = sample_points.reshape(B, Q, G * P, 3)
@@ -1225,8 +1230,13 @@ def sampling_4d(sample_points, mlvl_feats, scale_weights, lidar2img, image_h, im
     C = final.shape[2]  # [BG, Q, C, P]
     final = final.reshape(B, G, Q, C, P)
     final = final.permute(0, 2, 1, 4, 3) # [B, Q, G, P, C]
+    
+    if pos_3d is not None:
+        pos_3d = msmv_sampling(pos_3d, sample_points_cam.contiguous(), scale_weights.contiguous())    
+        pos_3d = pos_3d.reshape(B, G, Q, 3, P)
+        pos_3d = pos_3d.permute(0, 2, 1, 4, 3) # [B, Q, G, P, C]
 
-    return final, sample_points_cam[..., :2]
+    return final, pos_3d, sample_points_cam[..., :2]
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""

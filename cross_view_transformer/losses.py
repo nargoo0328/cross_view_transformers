@@ -106,6 +106,29 @@ class HeightRegressionLoss(torch.nn.Module):
 
         return (loss * mask).sum() / (mask.sum() + eps)
 
+class DepthLoss(torch.nn.Module):
+    def __init__(
+        self,
+        norm,
+    ):
+        super().__init__()
+
+        if norm == 1:
+            self.loss_fn = F.l1_loss
+        elif norm == 2:
+            self.loss_fn = F.mse_loss
+
+    def forward(self, pred, label):
+        pred_depth = pred['depth']
+        gt_depth = label['depth']
+
+        # re-scale gt depth to pred resolution
+        h, w = pred_depth.shape[-2:]
+        gt_depth = gt_depth.flatten(0,1).unsqueeze(1)
+        gt_depth = F.interpolate(gt_depth, size=[h,w]).squeeze(1)
+
+        return self.loss_fn(pred_depth, gt_depth, reduction='mean')
+
 class SigmoidFocalLoss(torch.nn.Module):
     def __init__(
         self,
