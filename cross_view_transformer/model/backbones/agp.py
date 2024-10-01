@@ -86,13 +86,13 @@ class PrepareChannel(nn.Module):
                     nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
                     nn.InstanceNorm2d(interm_c),
                     nn.ReLU(inplace=True),
-                    # nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
-                    # nn.InstanceNorm2d(interm_c),
-                    # nn.ReLU(inplace=True),
-                    BasicBlock(interm_c, interm_c),
-                    BasicBlock(interm_c, interm_c),
+                    nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
+                    nn.InstanceNorm2d(interm_c),
+                    nn.ReLU(inplace=True),
                     nn.Conv2d(interm_c, depth_num, kernel_size=1, padding=0)
                 )
+                # nn.init.zeros_(self.depth_layers[-1].weight)
+                # nn.init.zeros_(self.depth_layers[-1].bias)
             else:
                 self.depth_layers = None
 
@@ -106,7 +106,13 @@ class PrepareChannel(nn.Module):
 
         return
 
-    def forward(self, x):
+    def forward(self, x, pseudo_depth):
+        if pseudo_depth is not None:
+            H, W = x.shape[-2:]
+            pseudo_depth = pseudo_depth.flatten(0,1) / 61.2
+            pseudo_depth = nn.functional.interpolate(pseudo_depth, size=[H,W], mode='bilinear')
+            x = torch.cat((x, pseudo_depth), dim=1)
+        
         if self.depth_layers is not None:
             depth = self.depth_layers(x)
         else:
@@ -143,7 +149,7 @@ class AGPNeck(nn.Module):
         self.out_c = prepare_c_layer.out_c
         self.list_output = list_output
 
-    def forward(self, x: Iterable[torch.Tensor]):
+    def forward(self, x: Iterable[torch.Tensor], pseudo_depth=None):
         if x[0].ndim == 5:
             x = [y.flatten(0,1) for y in x]
         # Align resolution of inputs.
@@ -153,7 +159,7 @@ class AGPNeck(nn.Module):
         x = self.group_method(x)
 
         # Change channels of final input.
-        x, depth = self.prepare_c_layer(x)
+        x, depth = self.prepare_c_layer(x, pseudo_depth)
         assert x.shape[1] == self.out_c
         if self.list_output:
             return [x], depth

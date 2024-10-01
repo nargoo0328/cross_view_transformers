@@ -127,8 +127,9 @@ class IoUMetric(BaseIoUMetric):
     
     def compute(self):
         ious = super().compute()
-        max_iou = torch.round(ious.max(), decimals=4)
-        return {f"IoU_{self.key}": max_iou}
+        max_iou, indice = torch.max(ious, dim=0)
+        max_iou = torch.round(max_iou, decimals=4)
+        return {f"IoU_{self.key}": max_iou, "Max threshold": self.thresholds[indice]}
 
 class BoxMAPMetric(MeanAveragePrecision):
     def __init__(self, box_3d, output_format, metrics_setting=None):

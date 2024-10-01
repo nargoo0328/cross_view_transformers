@@ -93,7 +93,8 @@ class ModelModule(pl.LightningModule):
                     # print(f'{prefix}/metrics/{key}{subkey}: {val}')
                     self.log(f'{prefix}/metrics/{key}{subkey}', val, on_epoch=True, logger=True)
             else:
-                ious.append(value)
+                if 'IoU' in key:
+                    ious.append(value)
                 self.log(f'{prefix}/metrics/{key}', value, on_epoch=True, logger=True)
 
         self.log(f'{prefix}/metrics/mIoU', torch.stack(ious).mean(), on_epoch=True, logger=True)

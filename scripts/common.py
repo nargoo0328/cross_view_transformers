@@ -65,22 +65,9 @@ def _get_nusc_metric():
     nusc_path, pc_range = '/media/hcis-s20/SRL/nuscenes/trainval/', [-50.0, -50.0, -5.0, 50.0, 50.0, 3.0]
     return CustomNuscMetric(nusc_path, pc_range)
 
-def calculate_iou(model,network,loader, device, metric_mode):
+def calculate_iou(model, network, loader, device, metric_mode):
     score_threshold = 0.6
-    print("score_threshold:", score_threshold)
-    if metric_mode == 'iou' or metric_mode == 'box_projection':
-        iou_metrics = ['iou_ped','iou_vehicle']
-        for k,m in model.metrics.items():
-            if k not in iou_metrics:
-                continue
-            m.thresholds = m.thresholds.to(device)
-            m.tp = m.tp.to(device)
-            m.fp = m.fp.to(device)
-            m.fn = m.fn.to(device)
-    elif metric_mode == 'nusc':
-        nusc_metric = _get_nusc_metric()
-        nusc_metric._set_current_state('val')
-
+    model.to(device)
     network.to(device)
     network.eval()
     with torch.no_grad():
@@ -98,42 +85,7 @@ def calculate_iou(model,network,loader, device, metric_mode):
                         batch[k] = v
 
             pred = network(batch)
-
-            if metric_mode == 'box_projection':
-            # project box 
-                b = batch['bev'].shape[0]
-                render = np.zeros((b,2,200,200),np.float32)
-                pred_box = box_cxcywh_to_xyxy(pred['pred_boxes'].detach() * 200, transform=False).cpu().numpy()
-                # pred_box = pred_box * 100 - 50 
-                scores, labels = pred['pred_logits'].softmax(-1)[..., :-1].max(-1)
-                # pred_logits = pred['pred_logits'][0].detach().softmax(1).argmax(1).cpu().numpy() # N, num_classes
-                # for box, logit in zip(pred_box,pred_logits):
-                for j in range(b):
-                    for (x1,y1,x2,y2), score, label in zip(pred_box[j], scores[j], labels[j]):
-                        if score < score_threshold:
-                            continue
-                        label = 0 if label != 5 else 1
-                        cv2.rectangle(render[j][label], (int(x1), int(y1)), (int(x2), int(y2)), 1, -1)
-                pred['bev'] = torch.from_numpy(render[:,0:1]).to(device)
-                pred['ped'] = torch.from_numpy(render[:,1:2]).to(device)
-
-            if metric_mode == 'iou' or metric_mode == 'box_projection':
-                model.metrics.update(pred,batch)
-            elif metric_mode == 'nusc':
-                nusc_metric.update(pred,batch)
+            model.metrics.update(pred,batch)
+            break
     print()
-    if metric_mode == 'iou' or metric_mode == 'box_projection':
-        for k,m in model.metrics.items():
-            print(k,':\n\t',m.compute(),'\n','='*50)
-            if k in iou_metrics:
-                print(m.compute_recall())
-    elif metric_mode == 'nusc':
-        nusc_out = nusc_metric.compute(verbose=True)
-        del nusc_out['traffic_cone_mAP']
-        del nusc_out['barrier_mAP']
-        del nusc_out['mAP']
-        count = 0.0
-        for _, v in nusc_out.items():
-            count += v
-        nusc_out['mAP'] = count/8.0
-        print(nusc_out)
+    print(model.metrics.compute())

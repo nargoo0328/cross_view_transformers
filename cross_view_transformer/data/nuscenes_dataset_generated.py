@@ -3,7 +3,7 @@ import torch
 
 from pathlib import Path
 from .common import get_split
-from .transforms import Sample, LoadDataTransform
+from .transforms import Sample, LoadDataTransform, LoadDataTransform_DepthAnything
 
 def get_data(
     dataset_dir,
@@ -12,6 +12,7 @@ def get_data(
     version,
     num_classes,
     image=None,                         # image config
+    depth_anything=False,
     **dataset_kwargs
 ):
     dataset_dir = Path(dataset_dir)
@@ -19,7 +20,8 @@ def get_data(
 
     # Override augment if not training
     training = True if split == 'train' else False
-    transform = LoadDataTransform(dataset_dir, labels_dir, image, num_classes, training=training, **dataset_kwargs)
+    transform = LoadDataTransform_DepthAnything if depth_anything else LoadDataTransform
+    transform = transform(dataset_dir, labels_dir, image, num_classes, training=training, **dataset_kwargs)
 
     # Format the split name
     split = f'mini_{split}' if version == 'v1.0-mini' else split

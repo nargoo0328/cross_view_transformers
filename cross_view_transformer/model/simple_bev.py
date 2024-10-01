@@ -4,6 +4,57 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from .sparsebev import sampling_4d
 from .PointBEV_gridsample import PositionalEncodingMap
+from .common import Normalize
+
+class SparseBEVSeg(nn.Module):
+    def __init__(
+            self,
+            backbone,
+            encoder=None,
+            head=None,
+            neck=None,
+            decoder=nn.Identity(),
+    ):
+        super().__init__()
+    
+        self.norm = Normalize()
+        self.backbone = backbone
+
+        self.encoder = encoder
+        self.head = head
+        self.neck = neck
+        self.decoder = decoder
+
+    def forward(self, batch):
+        b, n, _, _, _ = batch['image'].shape
+        image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
+        lidar2img = batch['lidar2img']
+        features = self.backbone(self.norm(image))
+
+        if self.neck is not None:
+            features, depth = self.neck(features)
+        
+        features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
+        
+        x, mid_output, inter_output = self.encoder(features, lidar2img)
+        x = rearrange(x, 'b p c h w -> (b p) c h w')
+        # x = self.decoder(x)
+        tmp_output = self.head(x)
+        output = {}
+        for k, v in tmp_output.items():
+            output[k] = rearrange(v, '(b p) d h w -> b p d h w').sum(1)
+
+        if self.aux:
+            inter_output_pred = [self.head(inter_output[i], aux=True) for i in range(len(inter_output))]
+            output['aux'] = inter_output_pred
+
+        mid_output['inter_output'] = inter_output
+        output['depth'] = depth
+        # mid_output['features'] = features_
+
+        output['mid_output'] = mid_output #.squeeze() # squeeze group dimension
+
+        return output
 
 class SimpleBEVHead(nn.Module):
     """
@@ -95,13 +146,13 @@ class SimpleBEVDecoder(nn.Module):
 
             mlvl_feats[lvl] = feat.contiguous()
         
-        bev_feats = self.layer(
+        bev_feats, mid_output = self.layer(
                 mlvl_feats, 
                 lidar2img,
                 bev_pos, 
         )
 
-        return bev_feats, None, None
+        return bev_feats, {'stage_1': mid_output}, None
 
 class SimpleBEVDecoderLayer(nn.Module):
     def __init__(self, embed_dims, num_points, pc_range, h, w, position_encoder=None):
@@ -112,15 +163,13 @@ class SimpleBEVDecoderLayer(nn.Module):
         self.pc_range = pc_range
 
         self.position_encoder = position_encoder if position_encoder is not None else PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2)
-        self.mid_conv = nn.Sequential(
-            nn.Conv2d(num_points * 128, embed_dims * 4, 1),
-            nn.InstanceNorm2d(embed_dims * 4),
-            nn.GELU(),
-            nn.Conv2d(embed_dims * 4, embed_dims, 1),
-            nn.InstanceNorm2d(embed_dims),
-            nn.GELU(),
-            nn.Conv2d(embed_dims, embed_dims, 1),
-        )
+        # self.mid_conv = nn.Sequential(
+        #     nn.Conv2d(num_points * 128, embed_dims * 4, 1),
+        #     nn.GELU(),
+        #     nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
+        #     nn.GELU(),
+        #     nn.Conv2d(embed_dims * 4, embed_dims, 1),
+        # )
         self.sampling = SimpleBEVSampling(pc_range=pc_range, h=h, w=w)
 
     def forward(self,
@@ -136,7 +185,7 @@ class SimpleBEVDecoderLayer(nn.Module):
             bev_pos = rearrange(bev_pos, '(b z) d h w -> b z h w d', b=b, z=z)
 
         h, w = bev_pos.shape[2:4]
-        sampled_feat = self.sampling(
+        sampled_feat, mid_output = self.sampling(
             mlvl_feats,
             bev_pos,
             lidar2img,
@@ -144,10 +193,10 @@ class SimpleBEVDecoderLayer(nn.Module):
         )
 
         # sampled_feat = rearrange(sampled_feat, 'b q g p c -> b (p g c) q 1')
-        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w)
-        sampled_feat = self.mid_conv(sampled_feat)
+        sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g) c h w', h=h, w=w)
+        # sampled_feat = self.mid_conv(sampled_feat)
 
-        return sampled_feat
+        return sampled_feat, mid_output
     
 class SimpleBEVSampling(nn.Module):
     """Adaptive Spatio-temporal Sampling"""
@@ -166,22 +215,23 @@ class SimpleBEVSampling(nn.Module):
         reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
         reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
 
-        sampled_feats = sampling_4d(
+        sampled_feats, pos_3d, sample_points_cam = sampling_4d(
             reference_points,
             mlvl_feats,
             None,
             lidar2img,
             self.img_h, self.img_w
         )  # [B, Q, G, P, C]
-
+        mid_output = {}
+        mid_output.update({'sample_points_cam': sample_points_cam, 'reference_points': reference_points.clone()})
         if pos_encoder is not None:
             # normalized back
             reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
             reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
             reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2]) 
             sampled_feats = sampled_feats + pos_encoder(reference_points)
-
-        return sampled_feats
+        
+        return sampled_feats, mid_output
     
 class SimpleBEVDecoderLayer_pixel(nn.Module):
     def __init__(self, embed_dims, num_points, pc_range, h, w, position_encoder=None):

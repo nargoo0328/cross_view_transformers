@@ -25,11 +25,11 @@ visible:
   key: VEHICLE
   # min_visibility: 2
 
-depth_weight: 0.001
-depth:
-  _target_: cross_view_transformer.losses.DepthLoss
+# depth_weight: 0.001
+# depth:
+#   _target_: cross_view_transformer.losses.DepthLoss
 
-  norm: 2
+#   norm: 2
 
 # height_weight: 0.01
 # height:

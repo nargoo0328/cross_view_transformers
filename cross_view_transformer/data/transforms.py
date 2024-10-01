@@ -170,8 +170,30 @@ class SaveDataTransform:
 
 
 class LoadDataTransform(torchvision.transforms.ToTensor):
-    def __init__(self, dataset_dir, labels_dir, image_config, num_classes, image_data=True, lidar=None, box='',split_intrin_extrin=False, orientation=False, augment_img=False, augment_bev=False, no_class=False, img_params=None, bev_aug_conf=None, training=True, box_3d=True, **kwargs):
+    def __init__(self, 
+                dataset_dir, 
+                labels_dir, 
+                image_config, 
+                num_classes, 
+                image_data=True, 
+                lidar=None, 
+                box='',
+                split_intrin_extrin=False, 
+                orientation=False, 
+                augment_img=False, 
+                augment_bev=False, 
+                no_class=False, 
+                img_params=None, 
+                bev_aug_conf=None, 
+                training=True, 
+                box_3d=True, 
+                bev=True,
+                depth='',
+                **kwargs
+        ):
         super().__init__()
+        assert box in ['', 'gt', 'pseudo']
+        assert depth in ['', 'generate', 'generated']
 
         self.dataset_dir = pathlib.Path(dataset_dir)
         self.labels_dir = pathlib.Path(labels_dir)
@@ -179,7 +201,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         self.num_classes = num_classes
         self.image_data = image_data
         self.lidar = lidar
-        assert box in ['', 'gt', 'pseudo']
+        self.bev = bev
+        self.depth = depth
         self.box = box
         self.orientation = orientation
         self.no_class = no_class
@@ -200,13 +223,13 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         images = list()
         intrinsics = list()
         lidar2img = list()
+        depths = list()
 
         for image_path, I_original, extrinsic in zip(sample.images, sample.intrinsics, sample.extrinsics):
             h_resize = h + top_crop
             w_resize = w
 
             image = Image.open(self.dataset_dir / image_path)
-
             image_new = image.resize((w_resize, h_resize), resample=Image.BILINEAR)
             image_new = image_new.crop((0, top_crop, image_new.width, image_new.height))
             images.append(self.img_transform(image_new))
@@ -225,6 +248,15 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
                 lidar2img.append(torch.tensor(viewpad @ extrinsic))
             else:
                 intrinsics.append(torch.tensor(I))
+            
+            depth_path = image_path.replace('samples', 'depths')
+            if self.depth == 'generate':
+                depths.append(self.dataset_dir / depth_path)
+            elif self.depth == 'generated':
+                depth = Image.open(self.dataset_dir / depth_path)
+                depth_new = depth.resize((w_resize, h_resize), resample=Image.BILINEAR)
+                depth_new = depth_new.crop((0, top_crop, depth_new.width, depth_new.height))
+                depths.append(self.img_transform(depth_new))
 
         result = {
             'cam_idx': torch.LongTensor(sample.cam_ids),
@@ -243,16 +275,28 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             }
 
         result.update(sensor)
+
+        if self.depth == 'generate':
+            result['depth'] = depths
+        elif self.depth == 'generated':
+            result['depth'] = torch.stack(depths, 0) * 255
+    
         return result
     
     def get_cameras_augm(self, sample: Sample, **kwargs):
         images = list()
         intrinsics = list()
         extrinsics = list()
+        depths = list()
 
         for image_path, intrinsic, extrinsic in zip(sample.images, sample.intrinsics, sample.extrinsics):
             image = Image.open(self.dataset_dir / image_path)
             images.append(image)
+
+            if self.depth:
+                depth_path = image_path.replace('samples', 'depths')
+                depth = Image.open(self.dataset_dir / depth_path)
+                depths.append(depth)
 
             intrinsic = np.float32(intrinsic)
             extrinsic = np.float32(extrinsic)
@@ -262,8 +306,13 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         result = {'image': images}
         result.update({'intrinsics':intrinsics, 'extrinsics':extrinsics})
 
+        if self.depth:
+            result['depth'] = depths
+
         result = self.augment_img(result)
         result['image'] = torch.stack(result['image'], 0)
+        if self.depth:
+            result['depth'] = torch.stack(result['depth'], 0) * 255 / 80 * 61.2
         result['intrinsics'] = torch.stack(result['intrinsics'], 0)
         result['extrinsics'] = torch.stack(result['extrinsics'], 0)
 
@@ -343,7 +392,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         # lidar, voxel_coords = preprocess(pts)
         # idx = shuffle(lidar)
         # lidar, voxel_coords = lidar[idx], voxel_coords[idx]
-        return {'lidar': pts}#, 'coords': voxel_coords}
+        return pts #, 'coords': voxel_coords}
     
     def get_box(self, sample: Sample):
         scene_dir = self.labels_dir / sample.scene
@@ -599,7 +648,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         
         return {'labels':labels, 'boxes':boxes.astype(np.float32)}
 
-    def get_depth(self, result, bev_augm):
+    def get_depth(self, result, lidar_points, bev_augm):
 
         def fill_zeros_with_nearest(data):
             # Step 1: Identify zeros in the data
@@ -608,7 +657,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             # Invert the mask: non-zero -> 0, zero -> 1
             # distance_map = zero_mask.float()
             # Step 3: Use convolution to propagate nearest non-zero values
-            for _ in range(10):
+            for _ in range(0):
                 # Apply a convolution with a kernel of all ones
                 # conv_filter = torch.ones(1, 1, 3, 3, device=data.device)
                 # propagated_data = F.conv2d(data.unsqueeze(1), conv_filter, padding=1).squeeze(1)
@@ -620,7 +669,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
                 # # Step 4: Update the data where it was zero
                 # data[zero_mask] = new_data[zero_mask]
 
-                dilated_data = F.max_pool2d(data.unsqueeze(1), kernel_size=3, stride=1, padding=1).squeeze(1)
+                dilated_data = F.max_pool2d(data.unsqueeze(1), kernel_size=5, stride=1, padding=2).squeeze(1)
         
                 # Update the data: only replace zeros with the dilated values
                 data[zero_mask] = dilated_data[zero_mask]
@@ -628,8 +677,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
             return data
         
+        scale = 1
         N, _, H, W = result['image'].shape
-        lidar_points = result['lidar']
         lidar2img = result['lidar2img'] # N 4 4
         lidar2img = lidar2img @ bev_augm.inverse()
 
@@ -640,19 +689,20 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         homo_nonzero = torch.maximum(depth, torch.zeros_like(depth) + 1e-6)
         lidar_points = lidar_points[:, 0:2] / homo_nonzero
         valid_mask = ((depth > 1e-6) \
-            & (lidar_points[:, 1:2] > 1)
-            & (lidar_points[:, 1:2] < H - 1)
-            & (lidar_points[:, 0:1] > 1)
-            & (lidar_points[:, 0:1] < W - 1)
+            & (lidar_points[:, 1:2] > scale)
+            & (lidar_points[:, 1:2] < H - scale)
+            & (lidar_points[:, 0:1] > scale)
+            & (lidar_points[:, 0:1] < W - scale)
         )
 
-        depth_cam = torch.zeros((N, H, W))
+        lidar_points = lidar_points / scale
+        depth_cam = torch.zeros((N, H // scale, W // scale))
         for i in range(N):
             lidar_points_camera = lidar_points[i][:, valid_mask[i,0]]
             lidar_points_camera = torch.round(lidar_points_camera).int()
             depth_cam[i, lidar_points_camera[1], lidar_points_camera[0]] = depth[i][0, valid_mask[i,0]]
         
-        return {'depth': fill_zeros_with_nearest(depth_cam)}
+        return {'lidar_depth': fill_zeros_with_nearest(depth_cam)}
     
     def __call__(self, batch):
         if not isinstance(batch, Sample):
@@ -660,47 +710,178 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         
         result = dict()
         result['view'] = torch.tensor(batch.view)
-        result['5d_view'] = get_5d_view(result['view'])
 
         if self.image_data:
             get_cameras = self.get_cameras_augm if self.augment_img is not None else self.get_cameras 
             result.update(get_cameras(batch, **self.image_config))
         
-        result.update({'bev': torch.zeros((15,200,200))})
-        result.update({'token': batch['token']})
-        # result.update(self.get_bev(batch))
-
         if self.box and self.augment_bev is None:
             if self.box_3d:
                 result.update(self.get_box(batch))
             else:
                 result.update(self.get_box_2d(batch, result['5d_view']))
 
-        if self.augment_bev is not None:
-            bev_augm = self.augment_bev()
-            augm_bev_gt, augm_center_score, augm_center_offset, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
+        bev_augm = torch.eye(4)
+        if self.bev:
+            if self.augment_bev is not None:
+                result.update({'bev': torch.zeros((15,200,200))})
+                result.update({'token': batch['token']})
+                bev_augm = self.augment_bev()
+                augm_bev_gt, augm_center_score, augm_center_offset, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
 
-            result['bev'][4:13] = augm_bev_gt
-            result['center'] = augm_center_score
-            result['offset'] = augm_center_offset
-            # result['visibility'] = visibility
-            # result['height'] = height
-            # result['center_z'] = center_z
+                result['bev'][4:13] = augm_bev_gt
+                result['center'] = augm_center_score
+                result['offset'] = augm_center_offset
+                # result['visibility'] = visibility
+                # result['height'] = height
+                # result['center_z'] = center_z
 
-            # if self.box == 'pseudo':
-            #     result.update(self.get_bbox_from_bev(result['bev'], result['view']))
-            # elif self.box == 'gt':
-            #     result.update(gtbox_3d)
+                # if self.box == 'pseudo':
+                #     result.update(self.get_bbox_from_bev(result['bev'], result['view']))
+                # elif self.box == 'gt':
+                #     result.update(gtbox_3d)
 
-            bev_augm = torch.from_numpy(bev_augm)
-            result['extrinsics'] = result['extrinsics'] @ bev_augm
-            result['lidar2img'] = result['lidar2img'] @ bev_augm
-            result['bev_augm'] = bev_augm
-            # result = self._parse_bev_augm(result, bev_augm)
-            # result['bev_augm'] = bev_augm
+                bev_augm = torch.from_numpy(bev_augm)
+                result['extrinsics'] = result['extrinsics'] @ bev_augm
+                result['lidar2img'] = result['lidar2img'] @ bev_augm
+                result['bev_augm'] = bev_augm
+                # result = self._parse_bev_augm(result, bev_augm)
+                # result['bev_augm'] = bev_augm
+            else:
+                result.update(self.get_bev(batch))
+
 
         if self.lidar:
-            result.update(self.get_lidar(batch))
-            result.update(self.get_depth(result, bev_augm))
+            pts = self.get_lidar(batch)
+            result.update(self.get_depth(result, pts, bev_augm))
 
         return result
+    
+class LoadDataTransform_DepthAnything:
+    def __init__(self, 
+                dataset_dir, 
+                labels_dir, 
+                image,
+                num_classes,
+                transform=None, 
+                training=True,
+                **kwargs
+        ):
+        
+        self.dataset_dir = pathlib.Path(dataset_dir)
+        self.labels_dir = pathlib.Path(labels_dir)
+        self.transform = transform
+    
+    def get_cameras(self, sample: Sample):
+        """
+        Note: we invert I and E here for convenience.
+        """
+        images = list()
+        lidar2img = list()
+
+        for image_path, I_original, extrinsic in zip(sample.images, sample.intrinsics, sample.extrinsics):
+
+            image = cv2.imread(str(self.dataset_dir / image_path))
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) / 255.0
+            images.append(image)
+
+            I = np.float32(I_original)
+            extrinsic = np.float32(extrinsic)
+            viewpad = np.float32(np.eye(4))
+            viewpad[:I.shape[0], :I.shape[1]] = I
+            lidar2img.append(torch.tensor(viewpad @ extrinsic))
+
+        lidar2img = torch.stack(lidar2img, 0)
+
+        return images, lidar2img
+    
+    def get_lidar(self, sample: Sample):
+        
+        from nuscenes.utils.data_classes import LidarPointCloud
+        current_pc = LidarPointCloud.from_file(sample['lidar_pts'])
+        current_pc.remove_close(1.0)
+        pose = np.float32(sample['lidar_pose'])
+        current_pc.transform(pose)
+        pts = current_pc.points[:3]
+        return pts 
+
+    def get_depth(self, shape, lidar_points, lidar2img):
+
+        def fill_zeros_with_nearest(data):
+            # Step 1: Identify zeros in the data
+            zero_mask = data == 0
+            # Step 2: Create an initial distance map where non-zero values have a distance of 0
+            # Invert the mask: non-zero -> 0, zero -> 1
+            # distance_map = zero_mask.float()
+            # Step 3: Use convolution to propagate nearest non-zero values
+            for _ in range(0):
+                # Apply a convolution with a kernel of all ones
+                # conv_filter = torch.ones(1, 1, 3, 3, device=data.device)
+                # propagated_data = F.conv2d(data.unsqueeze(1), conv_filter, padding=1).squeeze(1)
+                # propagated_count = F.conv2d(distance_map.unsqueeze(1), conv_filter, padding=1).squeeze(1)
+                # # Avoid division by zero by masking out zero locations
+                # propagated_count[propagated_count == 0] = 1  # Avoid division by zero
+                # new_data = propagated_data / propagated_count
+
+                # # Step 4: Update the data where it was zero
+                # data[zero_mask] = new_data[zero_mask]
+
+                dilated_data = F.max_pool2d(data.unsqueeze(1), kernel_size=5, stride=1, padding=2).squeeze(1)
+        
+                # Update the data: only replace zeros with the dilated values
+                data[zero_mask] = dilated_data[zero_mask]
+                zero_mask = data == 0
+
+            return data
+        
+        scale = 1
+        H, W, _ = shape
+        N = 6
+
+        lidar_points = torch.from_numpy(lidar_points) # 4 P
+        lidar_points = torch.cat([lidar_points, torch.ones_like(lidar_points[0:1])], dim=0)
+        lidar_points = torch.matmul(lidar2img, lidar_points)[:, :3] # N 3 P
+        depth = lidar_points[:, 2:3]
+        homo_nonzero = torch.maximum(depth, torch.zeros_like(depth) + 1e-6)
+        lidar_points = lidar_points[:, 0:2] / homo_nonzero
+        valid_mask = ((depth > 1e-6) \
+            & (lidar_points[:, 1:2] > scale)
+            & (lidar_points[:, 1:2] < H - scale)
+            & (lidar_points[:, 0:1] > scale)
+            & (lidar_points[:, 0:1] < W - scale)
+        )
+
+        lidar_points = lidar_points / scale
+        depth_cam = np.zeros((N, H // scale, W // scale))
+        for i in range(N):
+            lidar_points_camera = lidar_points[i][:, valid_mask[i,0]]
+            lidar_points_camera = torch.round(lidar_points_camera).int()
+            depth_cam[i, lidar_points_camera[1], lidar_points_camera[0]] = depth[i][0, valid_mask[i,0]]
+        
+        return depth_cam
+    
+    def __call__(self, batch):
+        if not isinstance(batch, Sample):
+            batch = Sample(**batch)
+        
+        result = dict()
+        result['view'] = torch.tensor(batch.view)
+
+        images, lidar2img = self.get_cameras(batch)
+        
+        pts = self.get_lidar(batch)
+        depths = self.get_depth(images[0].shape, pts, lidar2img)
+
+        sample_images = []
+        sample_depths = []
+        valid_masks = []
+        for image, depth in zip(images, depths):
+            sample = self.transform({'image': image, 'depth': depth})
+            sample_images.append(torch.from_numpy(sample['image']))
+            sample_depths.append(torch.from_numpy(sample['depth']))
+            valid_mask = (sample['depth'] <= 60) & (sample['depth'] >= 1)
+            valid_masks.append(torch.from_numpy(valid_mask))
+        
+        sample_images, sample_depths, valid_masks = torch.stack(sample_images), torch.stack(sample_depths), torch.stack(valid_masks)
+    
+        return {'image': sample_images, 'depth':sample_depths, 'valid_mask': valid_masks}

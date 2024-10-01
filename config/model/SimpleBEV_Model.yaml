@@ -1,4 +1,4 @@
-_target_: cross_view_transformer.model.sparsebev_seg.SparseBEVSeg
+_target_: cross_view_transformer.model.simple_bev.SparseBEVSeg
 
 backbone:
   _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV

@@ -17,8 +17,49 @@ from .sparsebev import sampling_4d, inverse_sigmoid
 from .sparsebev import MLP as MLP_sparse
 from .PointBEV_gridsample import PositionalEncodingMap, MLP
 from .decoder import BEVDecoder, DecoderBlock
-from .simple_bev import SimpleBEVDecoderLayer_pixel
+# from .simple_bev import SimpleBEVDecoderLayer_pixel
+
+class DepthAdjustment(nn.Module):
+    def __init__(self, num_pieces=8, epsilon=1e-3):
+        super().__init__()
+        
+        # Number of pieces (intervals)
+        self.num_pieces = num_pieces
+        self.epsilon = epsilon
+        
+        # Define learnable parameters for each piece
+        self.scales = nn.Parameter(torch.linspace(1.0, 0.6, num_pieces))   # Learnable scale for each interval
+        self.shifts = nn.Parameter(torch.zeros(num_pieces))  # Learnable shift for each interval
     
+    def forward(self, depth_pred):
+        # Define piece boundaries (you can adjust these based on your problem)
+        boundaries = torch.linspace(1, 80, self.num_pieces + 1)
+        
+        # Piecewise transformation
+        depth_transformed = torch.zeros_like(depth_pred)
+        
+        for i in range(self.num_pieces):
+            # Apply different transformations based on the interval
+            lower_bound = boundaries[i]
+            upper_bound = boundaries[i + 1]
+            
+            # Different transformation for each piece (logarithmic, inverse, etc.)
+            # if i == 0:
+            #     # For small depths, use a linear transformation
+            #     piecewise_value = self.scales[i] * depth_pred + self.shifts[i]
+            # elif i == 1:
+            #     # For moderate depths, use a logarithmic transformation
+            #     piecewise_value = self.scales[i] * torch.log(depth_pred + self.epsilon) + self.shifts[i]
+            # else:
+            #     # For large depths, use an inverse transformation
+            #     piecewise_value = self.scales[i] * (1 / (depth_pred + self.epsilon)) + self.shifts[i]
+            
+            piecewise_value = self.scales[i] * depth_pred + self.shifts[i]
+            # Apply the transformation only within the current piece
+            depth_transformed += torch.where((depth_pred >= lower_bound) & (depth_pred < upper_bound), piecewise_value, torch.zeros_like(depth_pred))
+        
+        return depth_transformed
+
 class SparseBEVSeg(nn.Module):
     def __init__(
             self,
@@ -72,13 +113,20 @@ class SparseBEVSeg(nn.Module):
         # )
         # self.depth = nn.Conv2d(128, self.depth_num, 1)
         self.LID = True
+        # self.scale = nn.Parameter(torch.tensor([1.0]))
+        # self.shift = nn.Parameter(torch.tensor([0.0]))
+        if self.input_depth:
+            self.depth_adjust = nn.Identity()# DepthAdjustment()
 
     def get_pixel_coords_3d(self, depth, lidar2img):
         eps = 1e-5
         
         B, N, C, H, W = depth.shape
-        coords_h = torch.arange(H, device=depth[0].device).float() * 224 / H
-        coords_w = torch.arange(W, device=depth[0].device).float() * 480 / W
+        scale = 224 // H
+        # coords_h = torch.arange(H, device=depth.device).float() * 224 / H
+        # coords_w = torch.arange(W, device=depth.device).float() * 480 / W
+        coords_h = torch.linspace(scale // 2, 224 - scale//2, H, device=depth.device).float()
+        coords_w = torch.linspace(scale // 2, 480 - scale//2, W, device=depth.device).float()
 
         if self.LID:
             index  = torch.arange(start=0, end=self.depth_num, step=1, device=depth.device).float()
@@ -107,31 +155,43 @@ class SparseBEVSeg(nn.Module):
         coords_3d, coords_d = self.get_pixel_coords_3d(depth, lidar2img) # b n w h d 3
         # img_feats = rearrange(img_feats[0], 'b n d h w -> (b n) d h w')
         depth = rearrange(depth, 'b n ... -> (b n) ...')
-        depth = depth.softmax(1) # (b n) depth h w
-        pred_depth = (depth * coords_d.view(1, self.depth_num, 1, 1)).sum(1)
-        
+        depth_prob = depth.softmax(1) # (b n) depth h w
+        pred_depth = (depth_prob * coords_d.view(1, self.depth_num, 1, 1)).sum(1)
         coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
-        depth = depth.unsqueeze(-1)  # (b n) depth h w 1
-        coords_3d = (depth * coords_3d).sum(1)  # (b n) h w 3
+        depth_prob = depth_prob.unsqueeze(-1)  # (b n) depth h w 1
+        coords_3d = (depth_prob * coords_3d).sum(1)  # (b n) h w 3
         coords_3d = rearrange(coords_3d, '(b n) h w d-> b n d h w', b=b, n=n)
-        return coords_3d, pred_depth
+        uncertainty_map = torch.sqrt((depth_prob.squeeze(-1) * ((coords_d.view(1, -1, 1, 1) - pred_depth.unsqueeze(1).repeat(1, self.depth_num, 1, 1))**2)).sum(1))
+        uncertainty_map = rearrange(uncertainty_map, '(b n) h w -> b n h w',b=b, n=n)
+        return coords_3d, pred_depth, uncertainty_map
     
-    def get_pixel_depth(self, depth, img_feats, lidar2img):
+    def get_pixel_depth(self, depth, img_feats, lidar2img, pred_depth):
         eps = 1e-6
 
         B, N, C, H, W = img_feats[0].shape
+        scale = 224 // H
+        # B, N, C, H, W = depth.shape
 
-        depth = F.interpolate(depth, size=[H,W])
-        depth = depth.permute(0,1,3,2).unsqueeze(-1)
+        # depth = self.scale * depth + self.shift
+        depth = self.depth_adjust(depth)
+        depth = depth.flatten(0,1)
+        depth = F.interpolate(depth, size=[H,W], mode='bilinear')
+        depth = rearrange(depth, '(b n) c h w -> b n w h c', b=B, n=N)
+        pred_depth = rearrange(pred_depth, '(b n) c h w -> b n w h c', b=B, n=N)
+        # depth = (depth / 61.2 + pred_depth) * 61.2
+        depth = depth + pred_depth
 
-        coords_h = torch.arange(H, device=img_feats[0].device).float() * 224 / H
-        coords_w = torch.arange(W, device=img_feats[0].device).float() * 480 / W
+        # coords_h = torch.arange(H, device=img_feats[0].device).float() * 224 / H
+        # coords_w = torch.arange(W, device=img_feats[0].device).float() * 480 / W
+        coords_h = torch.linspace(scale // 2, 224 - scale//2, H, device=img_feats[0].device).float()
+        coords_w = torch.linspace(scale // 2, 480 - scale//2, W, device=img_feats[0].device).float()
         coords = torch.stack(torch.meshgrid([coords_w, coords_h])).permute(1, 2, 0)[None,None] # W, H, 2
         coords = coords.expand(B, N, W, H, 2)
-
+        # coords[..., :2] = coords[..., :2] * torch.maximum(coords[..., 2:3], torch.ones_like(coords[..., 2:3])*eps)
+        # coords = torch.cat((coords[..., :2] * torch.maximum(coords[..., 2:3], torch.ones_like(coords[..., 2:3])*eps), coords[..., 2:]), dim=-1)
+        coords = coords * torch.maximum(depth, torch.ones_like(depth)*eps)
         coords = torch.cat((coords, depth), dim=-1)
         coords = torch.cat((coords, torch.ones_like(coords[..., :1])), dim=-1)
-        coords[..., :2] = coords[..., :2] * torch.maximum(coords[..., 2:3], torch.ones_like(coords[..., 2:3])*eps)
         
         img2lidars = lidar2img.inverse() # b n 4 4
         coords = coords.unsqueeze(-1)
@@ -149,23 +209,24 @@ class SparseBEVSeg(nn.Module):
         # features_ = copy.deepcopy(features)
         # features = features[2:]
         if self.neck is not None:
+            # features, depth = self.neck(features, batch['depth'])
             features, depth = self.neck(features)
         
         if self.pos_encoder_2d is not None:
             features = self.pos_encoder_2d(features)
         
         features = [rearrange(y,'(b n) ... -> b n ...', b=b,n=n) for y in features]
-        # depth_ = depth
-        # features_ = features[0].clone()
+
         if depth is not None:
             depth = rearrange(depth,'(b n) ... -> b n ...', b=b,n=n)
-            pred_coords_3d, pred_depth = self.pred_depth(lidar2img, depth)
-            features.append(pred_coords_3d)
-            # features[0] = torch.cat((features[0], pred_depth), dim=2)
+            pred_coords_3d, pred_depth, uncertainty_map = self.pred_depth(lidar2img, depth)
+            # features.append(pred_coords_3d)
+            features[0] = torch.cat((features[0], pred_coords_3d), dim=2)
 
-        elif self.input_depth:
-            gt_depth = self.get_pixel_depth(batch['depth'], features, lidar2img)
+        if self.input_depth:
+            gt_depth = self.get_pixel_depth(batch['depth'], features, lidar2img, depth)
             features[0] = torch.cat((features[0], gt_depth), dim=2)
+            # features.append(gt_depth)
         # pos_embedding_2d = self.fpe(pos_embedding_2d.flatten(0,1), features[0].flatten(0,1)).view(features[0].size())
 
         # masks = features[0].new_zeros(
@@ -185,6 +246,7 @@ class SparseBEVSeg(nn.Module):
             output['aux'] = inter_output_pred
 
         mid_output['inter_output'] = inter_output
+        mid_output['uncertainty_map'] = uncertainty_map
         output['depth'] = pred_depth
         # mid_output['features'] = features_
 
@@ -281,6 +343,7 @@ class SegTransformerDecoder(nn.Module):
         position_encoding = PositionalEncodingMap(in_c=3, out_c=128, mid_c=128 * 2) if with_pos3d else None
         feats_2d_projection = MLP(128, 256, 128, 1) if with_features_proj else None
         position_encoding_bev = None
+        # alpha = nn.Parameter(torch.tensor([0.0]))
         self.layer = nn.ModuleList([SegTransformerDecoderLayer(int(scale) * embed_dims, num_points, num_groups, num_levels, pc_range, h, w, position_encoding, position_encoding_bev, feats_2d_projection, alpha) for scale in self.scale])
         decoder_layers = list()
         for scale, up_scale in zip(self.scale, up_scales):
@@ -394,7 +457,7 @@ class SegTransformerDecoderLayer(nn.Module):
         #         nn.Conv2d(embed_dims * 4, embed_dims, 1),
         # )
         self.mid_conv = nn.Sequential(
-                nn.Conv2d(128, 128 * 4, 3, padding=1),
+                nn.Conv2d(128 * 2, 128 * 4, 3, padding=1),
                 # nn.GELU(),
                 # nn.Conv2d(128 * 4, 128 * 4, 1),
                 nn.GELU(),
@@ -454,7 +517,7 @@ class SegTransformerDecoderLayer(nn.Module):
         bev_query = bev_query + self.in_conv(bev_query)
         bev_query = self.norm1(bev_query)
 
-        sampled_feat, mid_output = self.sampling(
+        sampled_feat, sampled_feats_weighted, mid_output = self.sampling(
             bev_query,
             mlvl_feats,
             bev_pos,
@@ -466,6 +529,11 @@ class SegTransformerDecoderLayer(nn.Module):
         )
         sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b p (g c) h w', h=h, w=w, g=1)
         sampled_feat = sampled_feat.sum(1)
+
+        sampled_feats_weighted = rearrange(sampled_feats_weighted, 'b (h w) g p c -> b p (g c) h w', h=h, w=w, g=1)
+        sampled_feats_weighted = sampled_feats_weighted.sum(1)
+
+        sampled_feat = torch.cat((sampled_feat, sampled_feats_weighted), dim=1)
         # sampled_feat = rearrange(sampled_feat, 'b (h w) g p c -> b (p g c) h w', h=h, w=w) # b p d h w & b d h w & b Q d b K d
         bev_query = bev_query + self.mid_conv(sampled_feat)
         
@@ -592,25 +660,27 @@ class SegSampling(nn.Module):
         # 3d sampling offset 
         elif mode == 'pillar':
 
-            sampling_offset = self.sampling_offset(query) # b (g p 3) h w
-            sampling_offset = rearrange(sampling_offset, 'b (g p d) h w -> b (h w) g p d',
-                                g=self.num_groups,
-                                p=self.num_points,
-                                d=2
-                            )
+            # sampling_offset = self.sampling_offset(query) # b (g p 3) h w
+            # sampling_offset = rearrange(sampling_offset, 'b (g p d) h w -> b (h w) g p d',
+            #                     g=self.num_groups,
+            #                     p=self.num_points,
+            #                     d=2
+            #                 )
             # sampling_offset[..., :2] = (sampling_offset[..., :2] * (0.25 * scale + self.eps) * 2) \
             #                             - (0.25 * scale + self.eps)
             # sampling_offset[..., 2:3] = (sampling_offset[..., 2:3] * (0.5 + self.eps) * 2) \
             #                             - (0.5 + self.eps)
             
-            reference_points = rearrange(reference_points, 'b p1 h w d -> b (h w) 1 p1 1 d').clone()
+            reference_points = rearrange(reference_points, 'b p1 h w d -> b (h w) 1 p1 d').clone()
+            if pos_encoder is not None:
+                pos_encode = pos_encoder(reference_points)
 
             reference_points[..., 0:1] = (reference_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
             reference_points[..., 1:2] = (reference_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
             reference_points[..., 2:3] = (reference_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
 
             # reference_points = reference_points + sampling_offset
-            reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
+            # reference_points = rearrange(reference_points, 'b q g p1 p2 d -> b q g (p1 p2) d')
 
         if self.scale_weights is not None:
             # scale weights
@@ -637,25 +707,32 @@ class SegSampling(nn.Module):
             if feats_2d_projection is not None:
                 sampled_feats = feats_2d_projection(sampled_feats)
 
-            # norm = torch.norm((reference_points - pos_3d), dim=-1)
-            # weight = torch.exp(-self.alpha * norm ** 2).unsqueeze(-1)
+            norm = torch.norm((reference_points - pos_3d), dim=-1)
+            weight = torch.exp(-self.alpha * norm ** 2).unsqueeze(-1)
 
-            distance = torch.norm(reference_points.clone(), dim=-1) - torch.norm(pos_3d, dim=-1)
-            positive_mask = (distance >= 0).float()
-            negative_mask = (distance < 0).float()
-            gauss_positive = torch.exp(-0.1 * (distance / self.alpha) ** 2)
-            gauss_negative = torch.exp(-0.1 * (distance / 0.1) ** 2)
-            weight = (gauss_positive * positive_mask + gauss_negative * negative_mask).unsqueeze(-1)
+            # distance = torch.norm(reference_points.clone(), dim=-1) - torch.norm(pos_3d, dim=-1)
+            # positive_mask = (distance >= 0).float()
+            # negative_mask = (distance < 0).float()
+            # gauss_positive = torch.exp(-0.1 * (distance / self.alpha) ** 2)
+            # gauss_negative = torch.exp(-0.1 * (distance / 0.1) ** 2)
+            # weight = (gauss_positive * positive_mask + gauss_negative * negative_mask).unsqueeze(-1)
 
             # weight = torch.where(weight < self.threshold, 0.0, weight)
             # weight = torch.where(weight < self.threshold, 0.0, weight)
-            sampled_feats = sampled_feats * weight
+            # sampled_feats = sampled_feats * weight
+            sampled_feats_weighted = sampled_feats * weight
         elif pos_3d is not None:
             if feats_2d_projection is not None:
                 sampled_feats = feats_2d_projection(sampled_feats)
                 
             norm = torch.norm((reference_points - pos_3d), dim=-1)
             weight = torch.exp(-self.alpha * norm ** 2).unsqueeze(-1)
+            # print(self.alpha)
+            # if weight.shape[1] == 40000:
+            #     # weight[0, 60*200 + 79, :, 0:2] = 0
+            #     weight = rearrange(weight, 'b (h w) ... -> b h w ...', h=200, w=200)
+            #     weight[0, 52:65, 71:87] = torch.zeros_like(weight[0, 52:65, 71:87])
+            #     weight = weight.flatten(1,2)
 
             # distance = torch.norm(reference_points.clone(), dim=-1) - torch.norm(pos_3d, dim=-1)
             # positive_mask = (distance >= 0).float()
@@ -664,13 +741,14 @@ class SegSampling(nn.Module):
             # gauss_negative = torch.exp(-0.1 * (distance / 0.4) ** 2)
             # weight = (gauss_positive * positive_mask + gauss_negative * negative_mask).unsqueeze(-1)
 
-            sampled_feats = sampled_feats * weight
+            sampled_feats_weighted = sampled_feats * weight
         else:
             pos_3d = None
             weight = None
             
         mid_output = {}
         mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points.clone(), 'weight': weight})
+        # sampled_feats = sampled_feats + pos_encode
 
         if pos_encoder is not None:
             # normalized back
@@ -691,312 +769,4 @@ class SegSampling(nn.Module):
         # mid_output = {}
         # mid_output.update({'sample_points_cam': sample_points_cam, 'pos_3d': pos_3d, 'reference_points': reference_points, 'weight': weight})
 
-        return sampled_feats, mid_output #sampling_offset[..., -1]
-    
-class AdaptiveMixing(nn.Module):
-    """Adaptive Mixing"""
-    def __init__(self, in_dim, out_dim, n_groups=4, n_points=8):
-        super(AdaptiveMixing, self).__init__()
-
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.n_groups = n_groups
-
-        self.parameter_generator = nn.Conv2d(in_dim, n_groups * ((in_dim // n_groups) ** 2), 1)
-        self.layer_norm = nn.LayerNorm(in_dim // n_groups)
-        self.act = nn.ReLU(inplace=True)
-        self.out_proj = nn.Linear(in_dim // n_groups * n_points, out_dim // n_groups)
-
-    def init_weights(self):
-        nn.init.zeros_(self.parameter_generator.weight)
-
-    def forward(self, bev_query, pts):
-        """
-        bev_query: b c h w
-        pts: b (h w) p c
-        """
-        pts = pts.squeeze(2)
-        b, _, h, w = bev_query.shape
-        param = self.parameter_generator(bev_query) # b (gc gc) h w
-        param = rearrange(param, 'b (g c1 c2) h w -> (b g) (h w) c1 c2', g=self.n_groups, c1=self.in_dim // self.n_groups, c2=self.in_dim // self.n_groups)
-
-        pts = rearrange(pts, 'b q p (g c) -> (b g) q p c', g=self.n_groups)
-        pts = torch.matmul(pts, param)
-        pts = self.act(self.layer_norm(pts))
-
-        pts = rearrange(pts, 'b q p c -> b q (p c)')
-        pts = self.out_proj(pts)
-        pts = rearrange(pts, '(b g) (h w) c -> b (g c) h w',h=h, w=w, b=b, g=self.n_groups)
-
-        return pts
-    
-class PixelPositionalEncoding(nn.Module):
-    def __init__(
-        self,
-        feat_height: int,
-        feat_width: int,
-        dim: int,
-        image_height: int,
-        image_width: int,
-    ):
-        super().__init__()
-
-        # 1 1 3 h w
-        xs = torch.linspace(0, 1, feat_width)
-        ys = torch.linspace(0, 1, feat_height)
-        image_plane = torch.stack(torch.meshgrid((xs, ys), indexing='xy'), 0)       # 2 h w
-        image_plane = F.pad(image_plane, (0, 0, 0, 0, 0, 1), value=1)                   # 3 h w
-
-        image_plane[0] *= image_width
-        image_plane[1] *= image_height
-        image_plane = image_plane.view(1, 1, 3, feat_height, feat_width) # 1 1 3 h w
-        self.register_buffer('image_plane', image_plane, persistent=False)
-
-        self.img_embed = nn.Conv2d(4, dim, 1, bias=False)
-        self.cam_embed = nn.Conv2d(4, dim, 1, bias=False)
-
-    def forward(
-        self,
-        I_inv: torch.FloatTensor,
-        E_inv: torch.FloatTensor,
-    ):
-        """
-        x: (b, c, H, W)
-        feature: (b, n, dim_in, h, w)
-        I_inv: (b, n, 3, 3)
-        E_inv: (b, n, 4, 4)
-
-        Returns: (b, d, H, W)
-        """
-
-        pixel = self.image_plane                                                # b n 3 h w
-        _, _, _, h, w = pixel.shape
-
-        c = E_inv[..., -1:]                                                     # b n 4 1
-        c_flat = rearrange(c, 'b n ... -> (b n) ...')[..., None]                # (b n) 4 1 1
-        c_embed = self.cam_embed(c_flat)                                        # (b n) d 1 1
-
-        pixel_flat = rearrange(pixel, '... h w -> ... (h w)')                   # 1 1 3 (h w)
-        cam = I_inv @ pixel_flat                                                # b n 3 (h w)
-        cam = F.pad(cam, (0, 0, 0, 1, 0, 0, 0, 0), value=1)                     # b n 4 (h w)
-        d = E_inv @ cam                                                         # b n 4 (h w)
-        d_flat = rearrange(d, 'b n d (h w) -> (b n) d h w', h=h, w=w)           # (b n) 4 h w
-        d_embed = self.img_embed(d_flat)                                        # (b n) d h w
-
-        img_embed = d_embed - c_embed                                           # (b n) d h w
-        img_embed = img_embed / (img_embed.norm(dim=1, keepdim=True) + 1e-7)    # (b n) d h w
-        return img_embed
-    
-class SinePositionalEncoding3D(nn.Module):
-    """Position encoding with sine and cosine functions.
-    See `End-to-End Object Detection with Transformers
-    <https://arxiv.org/pdf/2005.12872>`_ for details.
-    Args:
-        num_feats (int): The feature dimension for each position
-            along x-axis or y-axis. Note the final returned dimension
-            for each position is 2 times of this value.
-        temperature (int, optional): The temperature used for scaling
-            the position embedding. Defaults to 10000.
-        normalize (bool, optional): Whether to normalize the position
-            embedding. Defaults to False.
-        scale (float, optional): A scale factor that scales the position
-            embedding. The scale will be used only when `normalize` is True.
-            Defaults to 2*pi.
-        eps (float, optional): A value added to the denominator for
-            numerical stability. Defaults to 1e-6.
-        offset (float): offset add to embed when do the normalization.
-            Defaults to 0.
-        init_cfg (dict or list[dict], optional): Initialization config dict.
-            Default: None
-    """
-
-    def __init__(self,
-                 num_feats,
-                 temperature=10000,
-                 normalize=False,
-                 scale=2 * math.pi,
-                 eps=1e-6,
-                 offset=0.,):
-        super().__init__()
-        if normalize:
-            assert isinstance(scale, (float, int)), 'when normalize is set,' \
-                'scale should be provided and in float or int type, ' \
-                f'found {type(scale)}'
-        self.num_feats = num_feats
-        self.temperature = temperature
-        self.normalize = normalize
-        self.scale = scale
-        self.eps = eps
-        self.offset = offset
-
-    def forward(self, mask):
-        """Forward function for `SinePositionalEncoding`.
-        Args:
-            mask (Tensor): ByteTensor mask. Non-zero values representing
-                ignored positions, while zero values means valid positions
-                for this image. Shape [bs, h, w].
-        Returns:
-            pos (Tensor): Returned position embedding with shape
-                [bs, num_feats*2, h, w].
-        """
-        # For convenience of exporting to ONNX, it's required to convert
-        # `masks` from bool to int.
-        mask = mask.to(torch.int)
-        not_mask = 1 - mask  # logical_not
-        n_embed = not_mask.cumsum(1, dtype=torch.float32)
-        y_embed = not_mask.cumsum(2, dtype=torch.float32)
-        x_embed = not_mask.cumsum(3, dtype=torch.float32)
-        if self.normalize:
-            n_embed = (n_embed + self.offset) / \
-                      (n_embed[:, -1:, :, :] + self.eps) * self.scale
-            y_embed = (y_embed + self.offset) / \
-                      (y_embed[:, :, -1:, :] + self.eps) * self.scale
-            x_embed = (x_embed + self.offset) / \
-                      (x_embed[:, :, :, -1:] + self.eps) * self.scale
-        dim_t = torch.arange(
-            self.num_feats, dtype=torch.float32, device=mask.device)
-        dim_t = self.temperature**(2 * (dim_t // 2) / self.num_feats)
-        pos_n = n_embed[:, :, :, :, None] / dim_t
-        pos_x = x_embed[:, :, :, :, None] / dim_t
-        pos_y = y_embed[:, :, :, :, None] / dim_t
-        # use `view` instead of `flatten` for dynamically exporting to ONNX
-        B, N, H, W = mask.size()
-        pos_n = torch.stack(
-            (pos_n[:, :, :, :, 0::2].sin(), pos_n[:, :, :, :, 1::2].cos()),
-            dim=4).view(B, N, H, W, -1)
-        pos_x = torch.stack(
-            (pos_x[:, :, :, :, 0::2].sin(), pos_x[:, :, :, :, 1::2].cos()),
-            dim=4).view(B, N, H, W, -1)
-        pos_y = torch.stack(
-            (pos_y[:, :, :, :, 0::2].sin(), pos_y[:, :, :, :, 1::2].cos()),
-            dim=4).view(B, N, H, W, -1)
-        pos = torch.cat((pos_n, pos_y, pos_x), dim=4).permute(0, 1, 4, 2, 3)
-        return pos
-    
-class PointCrossAttention(nn.Module):
-    def __init__(self, embed_dims, num_points, num_heads=4, features_dim=128):
-        super().__init__()
-
-        self.q_proj = nn.Linear(embed_dims, features_dim, bias=False)
-        self.to_q = nn.Linear(features_dim, features_dim)
-
-        self.k_proj = nn.Linear(features_dim, features_dim, bias=False)
-        self.to_k = nn.Linear(features_dim, features_dim)
-        
-        # self.q_proj = nn.Linear(embed_dims, features_dim, bias=False)
-        # self.to_q = nn.Sequential(nn.LayerNorm(features_dim), nn.Linear(features_dim, features_dim))
-
-        # self.k_proj = nn.Sequential(
-        #     nn.LayerNorm(features_dim),
-        #     nn.GELU(),
-        #     nn.Linear(features_dim, features_dim, bias=False)
-        # )
-        # self.to_k = nn.Sequential(nn.LayerNorm(features_dim), nn.Linear(features_dim, features_dim))
-
-        # self.v_proj = nn.Sequential(
-        #     nn.LayerNorm(features_dim),
-        #     nn.GELU(),
-        #     nn.Linear(features_dim, features_dim, bias=False)
-        # )
-        # self.to_v = nn.Sequential(nn.LayerNorm(features_dim), nn.Linear(features_dim, features_dim))
-        
-        self.heads = num_heads
-        self.dim_head = features_dim // num_heads
-        self.scale = self.dim_head ** -0.5
-
-        # self.out_proj = nn.Linear(features_dim, embed_dims)
-        self.out_conv = nn.Sequential(
-                nn.Conv2d(num_points * features_dim, embed_dims * 4, 1),
-                nn.GELU(),
-                nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
-                nn.GELU(),
-                nn.Conv2d(embed_dims * 4, embed_dims, 1),
-        )
-
-    def forward(self, bev_query, sampled_feat, bev_pos_embed, pos_embed_2d):
-        
-        b, d, h, w = bev_query.shape
-        q = rearrange(bev_query, 'b d h w -> (b h w) 1 d')
-        bev_pos_embed = rearrange(bev_pos_embed, 'b h w d -> (b h w) 1 d')
-        sampled_feat = rearrange(sampled_feat, 'b q g p d -> (b q g) p d')
-        pos_embed_2d = rearrange(pos_embed_2d, 'b q g p d -> (b q g) p d')
-
-        sampled_feat = self.k_proj(sampled_feat) + pos_embed_2d
-        q = self.to_q(self.q_proj(q) + bev_pos_embed)
-        # k = self.to_k(self.k_proj(sampled_feat) + pos_embed_2d)
-        k = self.to_k(sampled_feat)
-        # v = self.to_v(self.v_proj(sampled_feat))
-
-        q = rearrange(q, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head) # (b h w m) 1 d
-        k = rearrange(k, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head) # (b h w m) p d
-        # v = rearrange(v, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head) # (b h w m) p d
-        
-        dot = self.scale * torch.einsum('b Q d, b K d -> b Q K', q, k) # (b h w m) 1 p
-        att = dot.softmax(dim=-1)
-        # if h == 50:
-        #     att_ = rearrange(att, '(b h w m) 1 p -> b h w m 1 p', h=h, w=w, b=b, m=self.heads)
-        #     y = 115 // 4
-        #     x = 64 // 4
-        #     print("attention score",att_[0, y, x])
-
-        #     x = x + 1
-        #     print("attention score",att_[0, y, x])
-
-        #     x = x + 1
-        #     print("attention score",att_[0, y, x])
-
-        # a = torch.einsum('b Q K, b K d -> b Q d', att, v) # (b h w m) d
-        # att = att.squeeze(1).unsqueeze(-1)
-        # a = (att * v)
-        # print(a.shape)
-        # a = a.sum(1)
-        # a = rearrange(a, '(b q m) d -> b q (m d)', m=self.heads, b=b)
-        # z = self.out_proj(a)
-        # z = rearrange(z, 'b (h w) d -> b d h w', h=h, w=w)
-        att = att.squeeze(1).unsqueeze(-1) # (b h w m) p 1
-        sampled_feat = rearrange(sampled_feat, 'b p (m d) -> (b m) p d', m=self.heads, d=self.dim_head)
-        sampled_feat = att * sampled_feat # (b h w m) p 1 * (b h w m) p d
-        sampled_feat = rearrange(sampled_feat, '(b h w m) p d -> b (p m d) h w', h=h, w=w, b=b, m=self.heads)
-        sampled_feat = self.out_conv(sampled_feat)
-        
-        return sampled_feat
-    
-class PointCrossAttention_2(nn.Module):
-    def __init__(self, embed_dims, num_points, num_heads=4, features_dim=128):
-        super().__init__()
-
-        self.q_proj = nn.Linear(embed_dims, features_dim, bias=False)
-        self.k_proj = nn.Linear(features_dim, features_dim, bias=False)
-        self.v_proj = nn.Linear(features_dim, features_dim, bias=False)
-        
-        self.attention = nn.MultiheadAttention(features_dim, num_heads, dropout=0.1, batch_first=True)
-        
-        self.out_conv = nn.Conv2d(features_dim, embed_dims, 3, padding=1)
-        
-    def forward(self, bev_query, sampled_feat, bev_pos_embed, pos_embed_2d):
-        
-        b, d, h, w = bev_query.shape
-        q = rearrange(bev_query, 'b d h w -> (b h w) 1 d')
-        bev_pos_embed = rearrange(bev_pos_embed, 'b h w d -> (b h w) 1 d')
-        sampled_feat = rearrange(sampled_feat, 'b q g p d -> (b q g) p d')
-        pos_embed_2d = rearrange(pos_embed_2d, 'b q g p d -> (b q g) p d')
-
-        q = self.q_proj(q)
-        k = self.k_proj(sampled_feat)
-        v = self.v_proj(sampled_feat)
-        
-        q, att = self.attention(q+bev_pos_embed, k+pos_embed_2d, v, average_attn_weights=False)
-        # if h == 50:
-        #     att_ = rearrange(att, '(b h w) m 1 p -> b h w m 1 p', h=h, w=w, b=b)
-        #     y = 115 // 4
-        #     x = 64 // 4
-        #     print("attention score",att_[0, y, x])
-
-        #     x = x + 1
-        #     print("attention score",att_[0, y, x])
-
-        #     x = x + 1
-        #     print("attention score",att_[0, y, x])
-        q = rearrange(q, '(b h w) 1 d -> b d h w', b=b, h=h, w=w)
-        q = self.out_conv(q)
-        return q, {'attention': att, 'bev_pos': bev_pos_embed, 'pos_embed_2d': pos_embed_2d}
+        return sampled_feats, sampled_feats_weighted, mid_output #sampling_offset[..., -1]

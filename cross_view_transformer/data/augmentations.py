@@ -58,7 +58,12 @@ class RandomTransformImage(object):
                 scale, crop[1], crop_zoom, flip, rotate, final_dims, img.size
             )
             img = self.pil_preprocess_from_affine_mat(img, ida_mat, final_dims)
-            results['image'][i] = self.transform(img) # np.array(img).astype(np.uint8)
+            if 'depth' in results:
+                depth = results['depth'][i]
+                depth = self.pil_preprocess_from_affine_mat(depth, ida_mat, final_dims)
+                results['depth'][i] = self.transform(depth)
+                
+            results['image'][i] = self.transform(img)
             results['intrinsics'][i] = torch.tensor(ida_mat @ results['intrinsics'][i])
             results['ida_mat'] = torch.tensor(ida_mat)
 

@@ -124,8 +124,14 @@ class DepthLoss(torch.nn.Module):
 
         # re-scale gt depth to pred resolution
         h, w = pred_depth.shape[-2:]
-        gt_depth = gt_depth.flatten(0,1).unsqueeze(1)
-        gt_depth = F.interpolate(gt_depth, size=[h,w]).squeeze(1)
+        gt_depth = gt_depth.flatten(0,1)
+        mask = gt_depth != 0
+        # gt_depth = F.interpolate(gt_depth, size=[h,w], mode='bilinear').squeeze(1)
+        # mask = F.interpolate(mask, size=[h,w], mode='nearest').squeeze(1)
+
+        # masking
+        gt_depth = gt_depth[mask]
+        pred_depth = pred_depth[mask]
 
         return self.loss_fn(pred_depth, gt_depth, reduction='mean')
 
@@ -142,7 +148,7 @@ class SigmoidFocalLoss(torch.nn.Module):
         self.gamma = gamma
         self.reduction = reduction
 
-    def forward(self, pred, label):
+    def forward(self, pred, label, reduction='none'):
         return sigmoid_focal_loss(pred, label, self.alpha, self.gamma, self.reduction)
     
 class Features_Loss(torch.nn.Module):
@@ -204,14 +210,14 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
         alpha=-1.0,
         gamma=2.0,
         key='bev',
-        aux_weight=0.1,
+        seq_loss_gamma=0.8,
     ):
         super().__init__(alpha=alpha, gamma=gamma, reduction='none')
         
         self.label_indices = label_indices
         self.min_visibility = min_visibility
         self.key = key
-        self.aux_weight = aux_weight
+        self.seq_loss_gamma = seq_loss_gamma
 
     def forward(self, pred_dict, batch):
         if isinstance(pred_dict, dict):            
@@ -244,17 +250,85 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
         loss = loss.mean()
 
         if 'aux' in pred_dict:
-            for aux_pred in pred_dict['aux']:
+            N_iter = len(pred_dict['aux'])
+            for i, aux_pred in enumerate(pred_dict['aux']):
                 aux_pred = aux_pred[self.key]
                 aux_loss = super().forward(aux_pred, label)
 
                 if self.min_visibility is not None:
                     aux_loss = aux_loss[mask]
 
-                loss += aux_loss.mean() * self.aux_weight
+                loss += aux_loss.mean() * self.seq_loss_gamma ** (N_iter - i)
 
         return loss
-    
+
+class SeqSegmentationLoss(torch.nn.Module):
+    def __init__(
+        self,
+        mode,
+        label_indices=None,
+        min_visibility=None,
+        alpha=-1.0,
+        gamma=2.0,
+        key='bev',
+        seq_loss_gamma=0.8,
+    ):
+        super().__init__()
+        
+        self.label_indices = label_indices
+        self.min_visibility = min_visibility
+        self.key = key
+        self.seq_loss_gamma = seq_loss_gamma
+
+        self.mode = mode
+        if mode == "l1":
+            self.loss_fn = F.l1_loss
+        elif mode == "l2":
+            self.loss_fn = F.mse_loss
+        elif mode == "sigmoid":
+            self.loss_fn = SigmoidFocalLoss(alpha=alpha, gamma=gamma, reduction='none')
+
+    def forward(self, pred_dict, batch):
+        pred = pred_dict[self.key]
+
+        if self.mode == "sigmoid":
+            label = batch['bev']
+
+            if self.label_indices is not None:
+                label = [label[:, idx].max(1, keepdim=True).values for idx in self.label_indices]
+                label = torch.cat(label, 1)
+        else:
+            label = batch[self.key]
+        
+        if self.min_visibility is not None:
+            if self.key == 'PED':
+                mask = batch['visibility_ped'] >= self.min_visibility
+            elif self.key == 'VEHICLE':
+                mask = batch['visibility'] >= self.min_visibility
+
+            mask = mask[:, None]
+        else:
+            mask = None
+
+        loss = self.loss_fn(pred, label, reduction='none')
+
+        if mask is not None:
+            loss = loss[mask]
+
+        loss = loss.mean()
+
+        N_iter = len(pred_dict['aux'])
+        for i, aux_pred in enumerate(pred_dict['aux']):
+            aux_pred = aux_pred[self.key]
+            aux_loss = self.loss_fn(aux_pred, label, reduction='none')
+
+            if self.min_visibility is not None:
+                aux_loss = aux_loss[mask]
+
+            loss += aux_loss.mean() * self.seq_loss_gamma ** (N_iter - i)
+
+        return loss
+
 class CenterLoss(SigmoidFocalLoss):
     def __init__(
         self,
