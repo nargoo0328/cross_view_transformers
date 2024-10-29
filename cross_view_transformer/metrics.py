@@ -79,7 +79,7 @@ class BaseIoUMetric(Metric):
         return {f'@{t.item():.2f}': i.item() for t, i in zip(thresholds, recalls)}
 
 class IoUMetric(BaseIoUMetric):
-    def __init__(self, label_indices: List[List[int]], min_visibility: Optional[int] = None, key= 'bev', sparse=False):
+    def __init__(self, label_indices: List[List[int]], min_visibility: Optional[int] = None, key= 'bev'):
         """
         label_indices:
             transforms labels (c, h, w) to (len(labels), h, w)
@@ -96,11 +96,11 @@ class IoUMetric(BaseIoUMetric):
         self.label_indices = label_indices
         self.min_visibility = min_visibility
         self.key = key
-        self.sparse = sparse
 
     def update(self, pred, batch):
 
         if isinstance(pred, dict):
+            pred_mask = pred['mask'] if 'mask' in pred else None
             pred = pred[self.key]                                                              # b c h w
         if isinstance(batch, dict):
             label = batch['bev']                                                                # b n h w
@@ -109,9 +109,8 @@ class IoUMetric(BaseIoUMetric):
         label = torch.cat(label, 1)       
                                                           # b c h w
         pred = pred.clone().detach().sigmoid()
-        if self.sparse:
-            pred[pred == 0.5] = 0
-        
+        if pred_mask is not None:
+            pred = pred * pred_mask
         if self.min_visibility is not None:
             if self.key == 'ped':
                 mask = batch['visibility_ped'] >= self.min_visibility

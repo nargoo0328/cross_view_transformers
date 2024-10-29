@@ -55,7 +55,8 @@ def main(cfg):
     logger = pl.loggers.WandbLogger(project=cfg.experiment.project,
                                     save_dir=cfg.experiment.save_dir,
                                     id=cfg.experiment.uuid,
-                                    resume="never",)
+                                    # resume="never",
+                                    )
     callbacks = [
         ModelSummary(max_depth=2),
         LearningRateMonitor(logging_interval='epoch'),

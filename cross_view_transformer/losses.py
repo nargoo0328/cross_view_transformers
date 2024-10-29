@@ -52,60 +52,77 @@ class SpatialRegressionLoss(torch.nn.Module):
 
         if self.ignore_index is not None:
             mask = mask * (target != self.ignore_index)
-            
+        
+        if pred_mask is not None:
+            mask = mask * pred_mask
+
         return (loss * mask).sum() / (mask.sum() + eps)
 
-class HeightRegressionLoss(torch.nn.Module):
-    def __init__(self, norm, min_visibility=None, key='height', radius=0.0, ignore_index=None, pos_weight=1.0):
-        super(HeightRegressionLoss, self).__init__()
-        # center:2, offset: 1
-        self.norm = norm
+class BCELoss(torch.nn.Module):
+    def __init__(
+        self,
+        pos_weight,
+        label_indices,
+        key,
+        min_visibility=None,
+    ):
+        """
+        BCE(p) = -(y * log(p) + (1 - y) * log(1 - p))
+
+        if y=0:
+            BCE(p) = -log(1 - p)
+            - if p ~ 0:
+                well classified and BCE(p) ~ 0
+            - if p ~ 1:
+                badly classified and BCE(p) ~ inf
+
+        if y=1:
+            BCE(p) = -log(p)
+            - if p ~ 0:
+                badly classified and BCE(p) ~ inf
+            - if p ~ 1:
+                well classified and BCE(p) ~ 0
+        """
+
+        super().__init__()
+        self.loss_fn = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([pos_weight]), reduction="none"
+        )
+        self.label_indices = label_indices
         self.min_visibility = min_visibility
         self.key = key
-        self.radius = radius
-        self.ignore_index = ignore_index
-        self.pos_weight = pos_weight
 
-        if norm == 1:
-            self.loss_fn = F.l1_loss
-        elif norm == 2:
-            self.loss_fn = F.mse_loss
-        else:
-            raise ValueError(f'Expected norm 1 or 2, but got norm={norm}')
+    def forward(self, pred_dict, batch):
+        if isinstance(pred_dict, dict):            
+            pred_mask = pred_dict['mask'] if 'mask' in pred_dict else None
+            pred = pred_dict[self.key]
 
-    def forward(self, prediction, batch, eps=1e-6):
+        label = batch['bev']
 
-        prediction = prediction[self.key]
-        target = batch[self.key]
-        assert len(prediction.shape) == 4, 'Must be a 4D tensor'
+        if self.label_indices is not None:
+            label = [label[:, idx].max(1, keepdim=True).values for idx in self.label_indices]
+            label = torch.cat(label, 1)
 
-        num_points = prediction.shape[1]
-        target_expand = target.expand(-1, num_points, -1, -1) # b 1 h w -> b p h w
-        loss = self.loss_fn(prediction, target_expand, reduction='none')
-
-        if self.radius > 0:
-            loss_radius = torch.zeros_like(loss) + (self.radius ** self.norm)
-            loss_radius = loss_radius * (target != 0.0)
-            loss -= loss_radius
-            loss = torch.clamp(loss, min=0.0)
-        
-        loss = loss.sum(1)
-        pos_weight = (target != 0.0).float() * self.pos_weight
-        neg_weight = torch.ones_like(loss) * (target == 0.0)
-        weight = pos_weight + neg_weight
-        loss = loss * weight
-
-        mask = torch.ones_like(loss, dtype=torch.bool)
-        if self.ignore_index is not None:
-            mask = mask * (target != 0.0)
-
+        loss = self.loss_fn(pred, label)
         if self.min_visibility is not None:
-            vis_mask = batch['visibility'] >= self.min_visibility
-            vis_mask = vis_mask[:, None]
-            mask = mask * vis_mask
+            if self.key == 'ped':
+                mask = batch['visibility_ped'] >= self.min_visibility
+            else:
+                mask = batch['visibility'] >= self.min_visibility
 
-        return (loss * mask).sum() / (mask.sum() + eps)
+            mask = mask[:, None]
+            if pred_mask is not None:
+                mask = mask & pred_mask
+            loss = loss[mask]
 
+        elif pred_mask is not None:
+            loss = loss[pred_mask]
+            loss = torch.nan_to_num(loss)
+
+        loss = loss.mean()
+
+        return loss
+    
 class DepthLoss(torch.nn.Module):
     def __init__(
         self,
@@ -221,7 +238,7 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
 
     def forward(self, pred_dict, batch):
         if isinstance(pred_dict, dict):            
-            # pred_mask = pred_dict['mask'] if 'mask' in pred else None
+            pred_mask = pred_dict['mask'] if 'mask' in pred_dict else None
             pred = pred_dict[self.key]
 
         label = batch['bev']
@@ -239,13 +256,13 @@ class BinarySegmentationLoss(SigmoidFocalLoss):
                 mask = batch['visibility'] >= self.min_visibility
 
             mask = mask[:, None]
-            # if pred_mask is not None:
-            #     mask = mask & pred_mask
+            if pred_mask is not None:
+                mask = mask & pred_mask
             loss = loss[mask]
 
-        # elif pred_mask is not None:
-        #     loss = loss[pred_mask]
-        #     loss = torch.nan_to_num(loss)
+        elif pred_mask is not None:
+            loss = loss[pred_mask]
+            loss = torch.nan_to_num(loss)
 
         loss = loss.mean()
 
@@ -366,7 +383,7 @@ class MultipleLoss(torch.nn.ModuleDict):
             if isinstance(v, float):
                 k = key.replace('_weight', '')
                 if v == -1:
-                    weights[k] =  0.001 if k not in ['visible', 'ped'] else 10.0 # 0.5 if k not in ['visible', 'ped'] else 10.0 0.5 if k not in ['loss_bbox'] else 1.0
+                    weights[k] =  0.5 if k not in ['visible', 'ped'] else 10.0 # 0.5 if k not in ['visible', 'ped'] else 10.0 0.5 if k not in ['loss_bbox'] else 1.0
                     learnable_weights[k] = nn.Parameter(torch.tensor(0.0), requires_grad=True)
                 else:
                     weights[k] = v
@@ -404,8 +421,10 @@ class MultipleLoss(torch.nn.ModuleDict):
             if k in self.learnable_weights:
                 loss_weight = (1 / torch.exp(self.learnable_weights[k])) * loss_weight
                 weights[k] = loss_weight
-
-            single_loss = loss_weight * o
+                uncertainty = self.learnable_weights[k] * 0.5
+            else:
+                uncertainty = 0.0
+            single_loss = loss_weight * o + uncertainty
             outputs[k] = single_loss
             loss.append(single_loss)
 

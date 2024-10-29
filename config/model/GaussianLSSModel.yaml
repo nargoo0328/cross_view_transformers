@@ -1,0 +1,55 @@
+_target_: cross_view_transformer.model.GaussianLSS.GaussianLSS
+
+embed_dims: 128
+error_tolerance: 0.5
+orth_scale: 0.75
+
+backbone:
+  _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
+  image_height: ${data.image.h}
+  image_width: ${data.image.w}
+  # return_list: ["reduction_2", "reduction_3", "reduction_4"]
+  return_list: ["reduction_3", "reduction_4"]
+  # checkpoint: True
+
+neck:
+  _target_: cross_view_transformer.model.backbones.agp.AGPNeck
+
+  align_res_layer:
+    _target_: cross_view_transformer.model.backbones.agp.AlignRes
+    mode: "upsample"
+    scale_factors: [1, 2]
+    # scale_factors: [1, 2, 4]
+
+  prepare_c_layer:
+    _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
+    in_channels: [56, 160]
+    # in_channels: [32, 56, 160]
+    mode: "doubleconv"
+    tail_mode: "conv2d"
+    # depth_num: 64
+    # opacity: True
+  
+  # list_output: True
+
+decoder:
+  # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+  _target_: cross_view_transformer.model.decoder.BevEncode
+  in_channels: ${model.embed_dims}  
+
+  # _target_: cross_view_transformer.model.sparse_resnet.SparseUNet
+
+  # in_c: ${model.embed_dims}
+  # out_c: ${model.embed_dims}
+
+head:
+  _target_: cross_view_transformer.model.decoder.SegHead
+
+  dim_last: ${model.embed_dims} 
+  multi_head: True
+  # sparse: True
+
+  outputs:
+    VEHICLE: [0, 1]
+    center: [1, 2]
+    offset: [2, 4]

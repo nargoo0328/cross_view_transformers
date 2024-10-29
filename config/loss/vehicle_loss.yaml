@@ -6,7 +6,7 @@ center:
   # min_visibility: 2
   key: center
 
-offset_weight: 0.1
+offset_weight:  0.1
 offset:
   _target_: cross_view_transformer.losses.SpatialRegressionLoss
 
@@ -18,11 +18,21 @@ offset:
 visible_weight: 1.0
 visible:
   _target_: cross_view_transformer.losses.BinarySegmentationLoss
+  # _target_: cross_view_transformer.losses.BCELoss
 
+  # pos_weight: 2.13
   label_indices: ${data.label_indices}
-  gamma: 2.0
-  alpha: -1.0
   key: VEHICLE
+  # min_visibility: 2
+
+# short_cut_weight: 0.1
+# short_cut:
+#   _target_: cross_view_transformer.losses.BinarySegmentationLoss
+
+#   label_indices: ${data.label_indices}
+#   gamma: 2.0
+#   alpha: -1.0
+#   key: short_cut
   # min_visibility: 2
 
 # depth_weight: 0.001

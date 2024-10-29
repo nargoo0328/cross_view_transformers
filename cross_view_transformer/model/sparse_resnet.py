@@ -325,7 +325,7 @@ class SparseUNet(nn.Module):
                 x_sp = spconv.SparseConvTensor(x.flatten(0,1), grid_idx.int(), spatial_shape, b)
 
         else:
-            # feats = rearrange(feats, "b c h w -> b h w c")
+            x = rearrange(x, "b c h w -> b h w c")
             x_sp = spconv.SparseConvTensor.from_dense(x)
         
         x_sp, skip_x = self.encoder(x_sp)

@@ -1,0 +1,71 @@
+_target_: cross_view_transformer.model.gaussian_BEV.GaussianBEV
+
+backbone:
+  _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
+  image_height: ${data.image.h}
+  image_width: ${data.image.w}
+  return_list: ["reduction_3", "reduction_4"]
+  # checkpoint: True
+
+neck:
+  _target_: cross_view_transformer.model.backbones.agp.AGPNeck
+
+  align_res_layer:
+    _target_: cross_view_transformer.model.backbones.agp.AlignRes
+    mode: "upsample"
+    scale_factors: [1, 2]
+
+  prepare_c_layer:
+    _target_: cross_view_transformer.model.backbones.agp.PrepareChannel
+    in_channels: [56, 160]
+    mode: "doubleconv"
+    tail_mode: "conv2d"
+  
+  list_output: True
+
+gaussian_encoder:
+  _target_: cross_view_transformer.model.gaussian_BEV.GaussianEncoder
+
+  embed_dims: 128
+  num_iterations: 4
+
+  gaussian_layer:
+    _target_: cross_view_transformer.model.gaussian_BEV.GaussianEncoderLayer
+
+    embed_dims: ${model.gaussian_encoder.embed_dims}
+    num_points: 8
+    img_h: ${data.image.h}
+    img_w: ${data.image.w}
+    pc_range: [-50.0, -50.0, -4.0, 50.0, 50.0, 4.0]
+    scale_range: [0.1, 0.1, 0.1, 2.0, 2.0, 2.0]
+
+  gaussians_renderer:
+    _target_: cross_view_transformer.model.gaussian_BEV.GaussianRenderer
+
+    embed_dims: ${model.gaussian_encoder.embed_dims}
+    scaling_modifier: 1
+    pc_range: [-50.0, -50.0, -4.0, 50.0, 50.0, 4.0]
+    scale_range: [0.1, 0.1, 2.0, 2.0, 2.0, 4.0]
+
+  # init
+  bev_h: 200
+  bev_w: 200
+  z: 8
+  gaussian_h: 200
+  gaussian_w: 200
+
+# bev_decoder:
+#   # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+#   _target_: cross_view_transformer.model.decoder.BevEncode
+#   in_channels: ${model.gaussian_encoder.embed_dims}
+
+head:
+  _target_: cross_view_transformer.model.decoder.SegHead
+
+  dim_last: ${model.gaussian_encoder.embed_dims}
+  multi_head: True
+
+  outputs:
+    VEHICLE: [0, 1]
+    center: [1, 2]
+    offset: [2, 4]

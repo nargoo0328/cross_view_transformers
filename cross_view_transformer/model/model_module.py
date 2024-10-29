@@ -48,6 +48,10 @@ class ModelModule(pl.LightningModule):
             if self.training and weights:
                 self.log_dict({f'{prefix}/weights/{k}': v.detach() for k, v in weights.items()},
                         on_step=on_step, on_epoch=True,logger=True)
+
+            if 'num_gaussians' in pred:
+                self.log(f'{prefix}/num_gaussians', pred['num_gaussians'], on_step=on_step, on_epoch=True, logger=True)
+            
         # Used for visualizations
         if return_output:
             return {'loss': loss, 'batch': batch, 'pred': pred}

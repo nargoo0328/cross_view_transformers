@@ -1,0 +1,26 @@
+# @package _global_
+defaults:
+  - override /model: GaussianBEVModel # BEVSD_model
+  - override /data: nuscenes_vehicle
+
+  - override /loss: seq_bev_loss
+  - override /metrics: vehicle_metrics
+  - override /visualization: nuscenes_viz
+    
+visualization:
+  key: ['VEHICLE']
+  # mask: True
+  label_indices: ${data.label_indices}
+  # box: True
+    
+data:
+  # box: gt
+  split_intrin_extrin: True
+  augment_img: True
+  augment_bev: True
+  label_indices: [[4,5,6,7,8,10,11,12]]
+  # box_3d: True
+  # depth: generated
+  # lidar: True
+
+val_only: False

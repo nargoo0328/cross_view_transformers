@@ -59,6 +59,7 @@ class PrepareChannel(nn.Module):
         mode="doubleconv",
         tail_mode="identity",
         depth_num=0,
+        opacity=False,
     ):
         super().__init__()
         assert mode in ["simpleconv", "doubleconv", "doubleconv_w_depth_layer"]
@@ -91,10 +92,23 @@ class PrepareChannel(nn.Module):
                     nn.ReLU(inplace=True),
                     nn.Conv2d(interm_c, depth_num, kernel_size=1, padding=0)
                 )
-                # nn.init.zeros_(self.depth_layers[-1].weight)
-                # nn.init.zeros_(self.depth_layers[-1].bias)
             else:
                 self.depth_layers = None
+            
+            if opacity:
+                self.opacity_layers = nn.Sequential(
+                    nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
+                    nn.InstanceNorm2d(interm_c),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
+                    nn.InstanceNorm2d(interm_c),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(interm_c, 1, kernel_size=1, padding=0)
+                )
+                # nn.init.zeros_(self.opacity_layers[-1].weight)
+                # nn.init.constant_(self.opacity_layers[-1].bias, -4)
+            else:
+                self.opacity_layers = None
 
         if tail_mode == "identity":
             self.tail = nn.Identity()
@@ -113,12 +127,15 @@ class PrepareChannel(nn.Module):
             pseudo_depth = nn.functional.interpolate(pseudo_depth, size=[H,W], mode='bilinear')
             x = torch.cat((x, pseudo_depth), dim=1)
         
-        if self.depth_layers is not None:
+        if self.opacity_layers is not None:
+            return self.tail(self.layers(x)), self.depth_layers(x), self.opacity_layers(x).sigmoid() #, self.scales(x).sigmoid() * 5, nn.functional.normalize(self.rotations(x), dim=1)
+    
+        elif self.depth_layers is not None:
             depth = self.depth_layers(x)
         else:
             depth = None
             
-        return self.tail(self.layers(x)), depth
+        return self.tail(self.layers(x)), depth, None
 
 
 class AGPNeck(nn.Module):
@@ -152,6 +169,7 @@ class AGPNeck(nn.Module):
     def forward(self, x: Iterable[torch.Tensor], pseudo_depth=None):
         if x[0].ndim == 5:
             x = [y.flatten(0,1) for y in x]
+        
         # Align resolution of inputs.
         x = self.align_res_layer(x)
 
@@ -159,11 +177,11 @@ class AGPNeck(nn.Module):
         x = self.group_method(x)
 
         # Change channels of final input.
-        x, depth = self.prepare_c_layer(x, pseudo_depth)
+        x, depth, opacity = self.prepare_c_layer(x, pseudo_depth)
         assert x.shape[1] == self.out_c
         if self.list_output:
-            return [x], depth
-        return x, depth
+            x = [x]
+        return x, depth, opacity
 
 class Depth_Neck(nn.Module):
     def __init__(
@@ -244,3 +262,89 @@ class Depth_Neck(nn.Module):
             depth = None
 
         return [feats_x], depth
+
+class GaussianNeck(nn.Module):
+    """
+    Upsample outputs of the backbones, group them and align them to be compatible with Network.
+
+    Note: mimics UpsamplingConcat in SimpleBEV.
+    """
+
+    def __init__(
+        self,
+        align_res_layer,
+        group_method=lambda x: torch.cat(x, dim=1),
+        list_output=False,
+    ):
+        """
+        Args:
+            - align_res_layer: upsample layers at different resolution to the same.
+            - group_method: how to gather the upsampled layers.
+            - prepare_c_layer: change the channels of the upsampled layers in order to align with the network.
+        """
+        super().__init__()
+
+        self.align_res_layer = align_res_layer
+        self.group_method = group_method
+        self.list_output = list_output
+
+    def forward(self, x: Iterable[torch.Tensor]):
+        if x[0].ndim == 5:
+            x = [y.flatten(0,1) for y in x]
+        # Align resolution of inputs.
+        x = self.align_res_layer(x)
+
+        # Group inputs.
+        x = self.group_method(x)
+        return x
+    
+class GaussianPrepareChannel(nn.Module):
+    """Transform the feature map to align with Network."""
+
+    def __init__(
+        self,
+        in_channels=[256, 512, 1024, 2048],
+        interm_c=128,
+        out_c: Optional[int] = 128,
+        mode="doubleconv",
+        tail_mode="identity",
+        depth_num=0,
+    ):
+        super().__init__()
+        assert mode in ["simpleconv", "doubleconv", "doubleconv_w_depth_layer"]
+        assert tail_mode in ["identity", "conv2d"]
+
+        in_c = sum(in_channels)
+        if "simpleconv" in mode:
+            self.layers = nn.Sequential(
+                nn.Conv2d(in_c, interm_c, kernel_size=1, bias=False),
+                nn.BatchNorm2d(interm_c),
+            )
+
+        elif "doubleconv" in mode:
+            # Used in SimpleBEV
+            self.layers = nn.Sequential(
+                nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(interm_c),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(interm_c),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(interm_c, out_c, kernel_size=1, padding=0),
+            )
+            self.depth_layers = nn.Sequential(
+                nn.Conv2d(in_c, interm_c, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(interm_c),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(interm_c, interm_c, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(interm_c),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(interm_c, depth_num, kernel_size=1, padding=0)
+            )
+            
+
+    def forward(self, x, pseudo_depth):
+        feats = self.layers(x)
+        depth = self.depth_layers(x)
+            
+        return 
