@@ -581,12 +581,12 @@ renderCUDA(
 				continue;
 
 			const float G = exp(power);
-			const float alpha = min(1.0f, con_o.w * G);
+			const float alpha = min(0.99f, con_o.w * G);
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
-			// T = T / (1.f - alpha);
-			// const float dchannel_dcolor = alpha * T;
+			T = T / (1.f - alpha);
+			const float dchannel_dcolor = alpha * T;
 
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
@@ -605,9 +605,9 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dcolors[global_id * C + ch]), dL_dchannel);
+				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
-			// dL_dalpha *= T;
+			dL_dalpha *= T;
 			// Update last alpha (to be used in the next iteration)
 			last_alpha = alpha;
 

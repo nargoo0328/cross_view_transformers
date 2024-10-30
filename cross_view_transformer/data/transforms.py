@@ -506,7 +506,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         # center & offset
         center_score = np.zeros((200, 200), dtype=np.float32)
-        center_offset = np.zeros((200, 200, 2), dtype=np.float32)
+        center_offset = np.zeros((200, 200, 2), dtype=np.float32) + 255
         visibility = np.full((200, 200), 255, dtype=np.uint8)
 
         buf = np.zeros((200, 200), dtype=np.uint8)

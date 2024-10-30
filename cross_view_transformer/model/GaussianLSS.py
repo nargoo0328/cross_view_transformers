@@ -54,56 +54,39 @@ class GaussianLSS(nn.Module):
         self.LID = True
         self.gs_render = GaussianRenderer(embed_dims, 1)
 
-        # layers = [Up(embed_dims * 2, embed_dims) for _ in range(2)]
-        # # layers.append(DecoderBlock(embed_dims, embed_dims, 1, embed_dims, False))
-        # self.decoder_block = nn.ModuleList(layers)
-
         self.error_tolerance = error_tolerance
         self.scale = 2
         # self.orth_layer = GaussianOrthLayer(embed_dims, 2, extent=orth_scale)
         self.orth_scale = orth_scale
         
-        self.feats_layers = nn.Sequential(
-            nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(embed_dims),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(embed_dims),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims, embed_dims, kernel_size=1, padding=0)
-        )
-        self.depth_layers = nn.Sequential(
-            nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(embed_dims),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(embed_dims),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims, self.depth_num, kernel_size=1, padding=0)
-        )
-        self.opacity_layers = nn.Sequential(
-            nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(embed_dims),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(embed_dims),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims, 1, kernel_size=1, padding=0)
-        )
-        # self.bev_conv = nn.Conv2d(embed_dims * 2, embed_dims, kernel_size=3, padding=1)
-
-        # self.update = GaussianUpdate(embed_dims, 8)
-        # self.depth_update = depth_update
-        # self.fusion = nn.Sequential(
-        #         nn.Conv2d(embed_dims * num_iters, embed_dims * 4, 1),
-        #         nn.GELU(),
-        #         nn.Conv2d(embed_dims * 4, embed_dims * 4, 1),
-        #         nn.GELU(),
-        #         nn.Conv2d(embed_dims * 4, embed_dims, 1),
+        # self.feats_layers = nn.Sequential(
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+        #     nn.InstanceNorm2d(embed_dims),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+        #     nn.InstanceNorm2d(embed_dims),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=1, padding=0)
         # )
-        # self.register_buffer('grid', ref_3d, persistent=False) # z h w 3
-        # self.weight = 0.8 ** (num_iters - 1 - torch.arange(0, num_iters))
-        # self.short_cut = nn.Conv2d(embed_dims, 1, 3, padding=1)
+        # self.depth_layers = nn.Sequential(
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+        #     nn.InstanceNorm2d(embed_dims),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+        #     nn.InstanceNorm2d(embed_dims),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(embed_dims, self.depth_num, kernel_size=1, padding=0)
+        # )
+        # self.opacity_layers = nn.Sequential(
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+        #     nn.InstanceNorm2d(embed_dims),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+        #     nn.InstanceNorm2d(embed_dims),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(embed_dims, 1, kernel_size=1, padding=0)
+        # )
+        # self.bev_conv = nn.Conv2d(embed_dims * 2, embed_dims, kernel_size=3, padding=1)
 
     def get_pixel_coords_3d(self, depth, lidar2img):
         eps = 1e-5
@@ -241,10 +224,10 @@ class GaussianLSS(nn.Module):
         image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
         lidar2img = batch['lidar2img']
         features = self.backbone(self.norm(image))
-        features, _, _ = self.neck(features)
-        depth = self.depth_layers(features)
-        opacities = self.opacity_layers(features).sigmoid()
-        features = self.feats_layers(features)
+        features, depth, opacities = self.neck(features)
+        # depth = self.depth_layers(features)
+        # opacities = self.opacity_layers(features).sigmoid()
+        # features = self.feats_layers(features)
         # opacities = torch.ones_like(features[:, 0:1])
         # opacities.requires_grad_ = False
         # 1
@@ -308,15 +291,15 @@ class GaussianLSS(nn.Module):
         #     stage_outputs['stage'].append(output)
         #     stage_outputs.update(output)
 
-        y = self.decoder(x)
-        # y = self.decoder(x, from_dense=True)
+        # y = self.decoder(x)
+        y = self.decoder(x, from_dense=True)
         output = self.head(y)
 
-        # mask = x[:, 0:1] != 0
-        # for k in output:
-        #     if isinstance(output[k], spconv.SparseConvTensor):
-        #         output[k] = output[k].dense()
-        # output['mask'] = mask
+        mask = x[:, 0:1] != 0
+        for k in output:
+            if isinstance(output[k], spconv.SparseConvTensor):
+                output[k] = output[k].dense()
+        output['mask'] = mask
 
         # output['VEHICLE'] += short_cut
         output['mid_output'] = {

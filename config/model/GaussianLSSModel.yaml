@@ -27,27 +27,27 @@ neck:
     # in_channels: [32, 56, 160]
     mode: "doubleconv"
     tail_mode: "conv2d"
-    # depth_num: 64
-    # opacity: True
+    depth_num: 64
+    opacity: True
   
   # list_output: True
 
 decoder:
   # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
-  _target_: cross_view_transformer.model.decoder.BevEncode
-  in_channels: ${model.embed_dims}  
+  # _target_: cross_view_transformer.model.decoder.BevEncode
+  # in_channels: ${model.embed_dims}  
 
-  # _target_: cross_view_transformer.model.sparse_resnet.SparseUNet
+  _target_: cross_view_transformer.model.sparse_resnet.SparseUNet
 
-  # in_c: ${model.embed_dims}
-  # out_c: ${model.embed_dims}
+  in_c: ${model.embed_dims}
+  out_c: ${model.embed_dims}
 
 head:
   _target_: cross_view_transformer.model.decoder.SegHead
 
   dim_last: ${model.embed_dims} 
   multi_head: True
-  # sparse: True
+  sparse: True
 
   outputs:
     VEHICLE: [0, 1]

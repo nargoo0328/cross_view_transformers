@@ -175,7 +175,7 @@ class BaseViz:
         cv2.fillPoly(img, [points.astype(np.int32)[:2].T], color=(164, 0, 0))
         return img
 
-    def visuaulize_pred(self, pred, view, threshold):
+    def visuaulize_pred(self, pred, view, threshold, mask=None):
         # class_num = pred.shape[0]
         # pred[pred>threshold]=1
         # pred[pred<=threshold]=0
@@ -190,6 +190,7 @@ class BaseViz:
 
         # pre = pre.cpu().numpy()
         # pre = pre.astype(np.uint8)
+        pred = pred * mask
         pred_vis = pred.squeeze(0).cpu().numpy() * 255
         pred_vis = pred_vis.astype(np.uint8)
         pred_vis = colorize(pred_vis)
@@ -234,6 +235,7 @@ class BaseViz:
             return []
         bev = batch['bev']
         view = batch['view'][0].cpu().numpy()
+        mask = pred_dict['mask'][b].detach().cpu() if 'mask' in pred_dict else None
         # out = [self.visualize_pred(bev[b], pred[s][b].sigmoid()) for s in ['bev','ped']]
 
         tmp = list()
@@ -241,7 +243,7 @@ class BaseViz:
             tmp.append(pred_dict[k][b].detach().cpu().sigmoid())
         pred = torch.cat(tmp, dim=1)
 
-        right = self.visuaulize_pred(pred, view, threshold)
+        right = self.visuaulize_pred(pred, view, threshold, mask)
 
         aux_list = []
         if 'aux' in pred_dict:

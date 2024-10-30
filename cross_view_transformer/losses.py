@@ -52,7 +52,7 @@ class SpatialRegressionLoss(torch.nn.Module):
 
         if self.ignore_index is not None:
             mask = mask * (target != self.ignore_index)
-        
+
         if pred_mask is not None:
             mask = mask * pred_mask
 

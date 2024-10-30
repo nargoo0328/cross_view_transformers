@@ -12,7 +12,7 @@ offset:
 
   norm: 1
   # min_visibility: 2
-  # ignore_index: 0.0
+  ignore_index: 255
   key: offset
 
 visible_weight: 1.0

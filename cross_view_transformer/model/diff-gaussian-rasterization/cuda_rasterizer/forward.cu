@@ -259,7 +259,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Store some useful helper data for the next steps.
 	// depths[idx] = p_view.z;
-	depths[idx] = 0;
+	depths[idx] = opacities[idx];
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
@@ -352,22 +352,22 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(1.0f, con_o.w * exp(power)); // exp(power)
+			float alpha = min(0.99f, con_o.w * exp(power)); // exp(power)
 			if (alpha < 1.0f / 255.0f)
 				continue;
-			// float test_T = T * (1 - alpha);
-			// if (test_T < 0.0001f)
-			// {
-			// 	done = true;
-			// 	continue;
-			// }
+			float test_T = T * (1 - alpha);
+			if (test_T < 0.0001f)
+			{
+				done = true;
+				continue;
+			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			// alpha = min(0.99f, con_o.w);
 			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha;
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
-			// T = test_T;
+			T = test_T;
 
 			// Keep track of last range entry to update this
 			// pixel.
