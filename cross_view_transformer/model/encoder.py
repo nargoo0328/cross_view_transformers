@@ -36,7 +36,7 @@ class CrossAttention(nn.Module):
         k: (b n d h w)
         v: (b n d h w)
         """
-        b, _, H, W = q.shape
+        b, _, H, W = q.shapev
         # Move feature dim to last for multi-head proj
         q = rearrange(q, 'b d H W -> b (H W) d')
         k = rearrange(k, 'b n d h w -> b (n h w) d')

@@ -79,7 +79,7 @@ class BaseIoUMetric(Metric):
         return {f'@{t.item():.2f}': i.item() for t, i in zip(thresholds, recalls)}
 
 class IoUMetric(BaseIoUMetric):
-    def __init__(self, label_indices: List[List[int]], min_visibility: Optional[int] = None, key= 'bev'):
+    def __init__(self, label_indices: List[List[int]], min_visibility: int = 0, key= 'bev'):
         """
         label_indices:
             transforms labels (c, h, w) to (len(labels), h, w)
@@ -111,7 +111,8 @@ class IoUMetric(BaseIoUMetric):
         pred = pred.clone().detach().sigmoid()
         if pred_mask is not None:
             pred = pred * pred_mask
-        if self.min_visibility is not None:
+
+        if self.min_visibility > 0:
             if self.key == 'ped':
                 mask = batch['visibility_ped'] >= self.min_visibility
             else:

@@ -28,7 +28,7 @@ class GaussianLSS(nn.Module):
             head,
             neck,
             encoder=None,
-            # decoder=nn.Identity(),
+            decoder=nn.Identity(),
             input_depth=False,
             depth_update=None,
             pc_range=None,
@@ -42,7 +42,7 @@ class GaussianLSS(nn.Module):
         self.encoder = encoder
         self.head = head
         self.neck = neck
-        self.decoder = Decoder(embed_dims)
+        self.decoder = decoder# Decoder(embed_dims, num_iters)
         self.gs_render = GaussianRenderer(embed_dims, 1)
         self.depth_update = depth_update
 
@@ -52,15 +52,17 @@ class GaussianLSS(nn.Module):
         lidar2img = batch['lidar2img']
         context = self.backbone(self.norm(image))
         features, _, _ = self.neck(context)
-        mean, uncertainty, features, opacities = self.depth_update(context[0], features, lidar2img)
+        mean, uncertainty, features, opacities, depths = self.depth_update(context[0], features, lidar2img)
         
     
         x, num_gaussians = self.gs_render(features, mean, uncertainty, opacities, [b, n])
-        y = self.decoder(*x)
+        y = self.decoder(x)
         output = self.head(y)
         direction_vector = None
         output['mid_output'] = {'features':features, 'mean':mean, 'uncertainty':uncertainty, 'direction_vector':direction_vector, 'opacities':opacities}
         output['num_gaussians'] = num_gaussians
+        output['x'] = x
+        output['depths'] = depths
 
         return output
     
@@ -132,9 +134,11 @@ class GaussianRenderer(nn.Module):
         # self.set_render_scale(int(200 * 1), int(200 * 1))
         # self.set_Rasterizer(device)
         num_gaussians = 0
+        x = torch.empty((b, 128, 200, 200)).to(device)
         for scale in range(len(means3D)):
             bev_out = []    
-            self.set_render_scale(int(200 * (2 **(scale - len(means3D) + 1))), int(200 * (2 **(scale - len(means3D) + 1))))
+            # self.set_render_scale(int(200 * (2 **(scale - len(means3D) + 1))), int(200 * (2 **(scale - len(means3D) + 1))))
+            self.set_render_scale(200, 200)
             self.set_Rasterizer(device)
 
             cov3D_scale = uncertainty[scale]
@@ -162,10 +166,11 @@ class GaussianRenderer(nn.Module):
                     cov3D_precomp=cov3D_scale[i][mask[i]]
                 )
                 bev_out.append(rendered_bev)
-            multi_scale_output.append(torch.stack(bev_out, dim=0))
+            # multi_scale_output.append(torch.stack(bev_out, dim=0))
+            x += torch.stack(bev_out, dim=0)
             num_gaussians += (mask.detach().float().sum(1)).mean().cpu()
 
-        return multi_scale_output, num_gaussians
+        return x, num_gaussians
 
     @torch.no_grad()
     def set_Rasterizer(self, device):
@@ -304,7 +309,13 @@ class DepthUpdateHead(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Conv2d(embed_dims, 1, kernel_size=3, padding=1),
         )
+        self.scale_head = nn.Sequential(
+                nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(embed_dims, 1, kernel_size=3, padding=1),
+        )
         self.error_tolerance = error_tolerance
+        self.scale_max = 5.0
 
     def get_pixel_coords_3d(self, depth, lidar2img):
         eps = 1e-5
@@ -329,15 +340,33 @@ class DepthUpdateHead(nn.Module):
 
         return coords3d
 
-    def get_gaussian(self, depth_prob, depths, lidar2img):
+    # def get_gaussian(self, depth_prob, depths, lidar2img, i):
+
+    #     coords_3d = self.get_pixel_coords_3d(depths, lidar2img) # (b n) d h w 3
+    #     direction_vector = F.normalize((coords_3d[:, 1] - coords_3d[:, 0]), dim=-1)
+    #     pred_coords_3d = (depth_prob.unsqueeze(-1) * coords_3d).sum(1)  # (b n) h w 3
+
+    #     delta_3d = pred_coords_3d.unsqueeze(1) - coords_3d
+    #     cov = (depth_prob.unsqueeze(-1).unsqueeze(-1) * (delta_3d.unsqueeze(-1) @ delta_3d.unsqueeze(-2))).sum(1)
+    #     scale = (self.error_tolerance[i] ** 2) / 9 
+    #     cov = cov * scale
+    #     cov = cov + 1.0 * direction_vector.unsqueeze(-1) @ direction_vector.unsqueeze(-2)
+
+    #     return pred_coords_3d, cov
+
+    def get_gaussian(self, depth_prob, depths, scale, lidar2img):
 
         coords_3d = self.get_pixel_coords_3d(depths, lidar2img) # (b n) d h w 3
+        direction_vector = F.normalize((coords_3d[:, 1] - coords_3d[:, 0]), dim=-1)
         pred_coords_3d = (depth_prob.unsqueeze(-1) * coords_3d).sum(1)  # (b n) h w 3
 
-        delta_3d = pred_coords_3d.unsqueeze(1) - coords_3d
-        cov = (depth_prob.unsqueeze(-1).unsqueeze(-1) * (delta_3d.unsqueeze(-1) @ delta_3d.unsqueeze(-2))).sum(1)
-        scale = (self.error_tolerance ** 2) / 9 
-        cov = cov * scale
+        # delta_3d = pred_coords_3d.unsqueeze(1) - coords_3d
+        # cov = (depth_prob.unsqueeze(-1).unsqueeze(-1) * (delta_3d.unsqueeze(-1) @ delta_3d.unsqueeze(-2))).sum(1)
+        # scale = (self.error_tolerance[i] ** 2) / 9 
+        # cov = cov * scale
+        scale = rearrange(scale, 'b 1 h w -> b h w 1 1')
+        cov = scale * direction_vector.unsqueeze(-1) @ direction_vector.unsqueeze(-2)
+
         return pred_coords_3d, cov
 
     def forward(self, context, feats, lidar2img):
@@ -363,7 +392,8 @@ class DepthUpdateHead(nn.Module):
 
         bin_edges = torch.cumsum(interval, 1)
         current_depths = 0.5 * (bin_edges[:, :-1] + bin_edges[:, 1:])
-        index_iter = 0
+
+        depths = []
 
         for i in range(self.num_iter):
             input_features = self.encoder(current_depths.detach(), pred_opacities.detach())
@@ -372,8 +402,11 @@ class DepthUpdateHead(nn.Module):
             gru_hidden = self.gru(gru_hidden, input_c)
             pred_prob = self.depth_head(gru_hidden).softmax(dim=1)
             pred_opacities = self.opacity_head(gru_hidden).sigmoid()
+            pred_scale = self.scale_head(gru_hidden).sigmoid() * self.scale_max + 1e-2
 
-            mean, cov = self.get_gaussian(pred_prob, current_depths.detach(), lidar2img)
+            # pred_scale = (pred_scale * (self.scale_range[1] - self.scale_range[0])) + self.scale_range[0]
+
+            mean, cov = self.get_gaussian(pred_prob, current_depths.detach(), pred_scale, lidar2img)
             means.append(mean)
             covs.append(cov)
             features.append(gru_hidden)
@@ -381,8 +414,8 @@ class DepthUpdateHead(nn.Module):
 
             depth_r = (pred_prob * current_depths.detach()).sum(1, keepdim=True)
             depth_uncertainty_map = torch.sqrt((pred_prob * ((current_depths.detach() - depth_r.repeat(1, self.depth_num, 1, 1))**2)).sum(1, keepdim=True))
-        
-            index_iter = index_iter + 1
+            # print(i, depth_uncertainty_map.detach().cpu().min().numpy(), depth_uncertainty_map.detach().cpu().max().numpy())
+            depths.append(depth_r)
 
             pred_label = get_label(torch.squeeze(depth_r, 1), bin_edges, self.depth_num).unsqueeze(1)
 
@@ -391,9 +424,9 @@ class DepthUpdateHead(nn.Module):
             label_target_bin_right = (pred_label.float() + 1).long()
             target_bin_right = torch.gather(bin_edges, 1, label_target_bin_right)
 
-            bin_edges, current_depths = update_sample(bin_edges, target_bin_left, target_bin_right, depth_r.detach(), pred_label.detach(), self.depth_num, min_depth, max_depth, depth_uncertainty_map, self.error_tolerance)
+            bin_edges, current_depths = update_sample(bin_edges, target_bin_left, target_bin_right, depth_r.detach(), pred_label.detach(), self.depth_num, min_depth, max_depth, depth_uncertainty_map, self.error_tolerance[i])
 
-        return means, covs, features, opacities # torch.stack(means, dim=1), torch.stack(covs, dim=1), torch.stack(features, dim=1), torch.stack(opacities, dim=1)
+        return means, covs, features, opacities, depths # torch.stack(means, dim=1), torch.stack(covs, dim=1), torch.stack(features, dim=1), torch.stack(opacities, dim=1)
 
 class SepConvGRU(nn.Module):
     def __init__(self, embed_dims=128, in_dim=128+192):
@@ -428,15 +461,15 @@ class ProjectionInputDepth(nn.Module):
     def __init__(self, depth_num, hidden_dim, out_chs):
         super().__init__()
         self.out_chs = out_chs 
-        self.convd1 = nn.Conv2d(depth_num+1, hidden_dim, 7, padding=3)
+        self.convd1 = nn.Conv2d(depth_num, hidden_dim, 5, padding=2)
         self.convd2 = nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1)
         self.convd3 = nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1)
         self.convd4 = nn.Conv2d(hidden_dim, out_chs, 3, padding=1)
         
     def forward(self, depth, opacity, depth_max=61, depth_min=1):
-        depth = (depth - depth_min) / depth_max
-        d = torch.cat((depth, opacity), dim=1)
-        d = F.relu(self.convd1(d))
+        # depth = (depth - depth_min) / depth_max
+        # d = torch.cat((depth, opacity), dim=1)
+        d = F.relu(self.convd1(depth))
         d = F.relu(self.convd2(d))
         d = F.relu(self.convd3(d))
         d = F.relu(self.convd4(d))
@@ -444,72 +477,45 @@ class ProjectionInputDepth(nn.Module):
         return d
 
 class Decoder(nn.Module):
-    def __init__(self, embed_dims):
+    def __init__(self, embed_dims, num_layers):
         super(Decoder, self).__init__()
-        
-        self.project1 = nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1)
-        self.project2 = nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1)
-        self.project3 = nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1)
-        self.project4 = nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1)
 
-        self.up_conv1 = nn.Sequential(
-            nn.Conv2d(embed_dims * 2, embed_dims * 1, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(embed_dims * 1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims * 1, embed_dims * 1, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(embed_dims * 1),
-            nn.ReLU(inplace=True)
-        )
-        self.up_conv2 = nn.Sequential(
-            nn.Conv2d(embed_dims * 2, embed_dims * 1, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(embed_dims * 1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims * 1, embed_dims * 1, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(embed_dims * 1),
-            nn.ReLU(inplace=True)
-        )
-        self.up_conv3 = nn.Sequential(
-            nn.Conv2d(embed_dims * 2, embed_dims, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(embed_dims),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(embed_dims),
-            # nn.ReLU(inplace=True)
-        )
-        
-        # Final convolution to reduce the channel count after aggregation
-        # self.out_conv = nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1)
+        # Dynamically create `project` layers based on `num_layers`
+        self.project_layers = nn.ModuleList([
+            nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1) for _ in range(num_layers)
+        ])
 
-    def forward(self, x1, x2, x3, x4):
+        # Dynamically create `up_conv` layers based on `num_layers`
+        self.up_conv_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(embed_dims * 2, embed_dims, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(embed_dims),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1, bias=False),
+                nn.InstanceNorm2d(embed_dims),
+                nn.ReLU(inplace=True)
+            ) for _ in range(num_layers - 1)
+        ])
+
+    def forward(self, *features):
         """
-        :param feat_1_8: BEV feature map at 1/8 resolution
-        :param feat_1_4: BEV feature map at 1/4 resolution
-        :param feat_1_2: BEV feature map at 1/2 resolution
-        :param feat_1_1: BEV feature map at full resolution (1/1)
-        :return: Aggregated feature map at 1/1 resolution
+        :param features: Variable number of input feature maps (from lowest to highest resolution)
+        :return: Aggregated feature map at full resolution (1/1)
         """
+        x = self.project_layers[0](features[0])  # Initial project layer on the lowest resolution feature map
 
-        x = self.project1(x1)
-        x2 = self.project2(x2)
-        x3 = self.project3(x3)
-        x4 = self.project4(x4)
-        # Upsample from 1/8 to 1/4 and concatenate
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        x = torch.cat([x, x2], dim=1)  # Concatenate along the channel dimension
-        x = self.up_conv1(x)  # Apply convolution after concatenation
+        for i in range(1, len(features)):
+            # Apply project layer to the current feature map
+            current_feature = self.project_layers[i](features[i])
 
-        # Upsample from 1/4 to 1/2 and concatenate
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        x = torch.cat([x, x3], dim=1)
-        x = self.up_conv2(x)
+            # Upsample the intermediate output
+            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
 
-        # Upsample from 1/2 to 1/1 and concatenate
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        x = torch.cat([x, x4], dim=1)
-        x = self.up_conv3(x)
+            # Concatenate with the current feature map
+            x = torch.cat([x, current_feature], dim=1)
 
-        # # Final convolution
-        # x = self.final_conv(x)
+            # Apply corresponding up_conv layer
+            x = self.up_conv_layers[i - 1](x)  # Use i - 1 to match the up_conv index
 
         return x
 

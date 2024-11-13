@@ -497,6 +497,17 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         return points_out    
     
     def get_bev_from_gtbbox(self, sample: Sample, bev_augm):
+
+        def filter_box(corners):
+            x_min, x_max = corners[0].min(), corners[0].max()
+            y_min, y_max = corners[1].min(), corners[1].max()
+            
+            # Check for overlap along X-axis
+            x_overlap = (x_max > -50) and (x_min < 50)
+            # Check for overlap along Y-axis
+            y_overlap = (y_max > -50) and (y_min < 50)
+            return not (x_overlap and y_overlap)
+
         scene_dir = self.labels_dir / sample.scene
         gt_box = np.load(scene_dir / sample.gt_box, allow_pickle=True)['gt_box']
         V = sample.view
@@ -506,7 +517,7 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
 
         # center & offset
         center_score = np.zeros((200, 200), dtype=np.float32)
-        center_offset = np.zeros((200, 200, 2), dtype=np.float32) + 255
+        center_offset = np.zeros((200, 200, 2), dtype=np.float32) #+ 255
         visibility = np.full((200, 200), 255, dtype=np.uint8)
 
         buf = np.zeros((200, 200), dtype=np.uint8)
@@ -526,7 +537,9 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             # class_idx = int(box_data[7])
             visibility_token = box_data[8]
             box = Box(translation, size, sincos2quaternion(np.sin(yaw),np.cos(yaw)))
-            
+            # if self.training:
+            #     if filter_box(box.corners()):
+            #         continue
             points = box.bottom_corners()
             # if self.training: # as we apply BEV augmentation, we should filter boxes that are out of range
             #     if (points[0, :] > 50.0).all() or (points[0, :] < -50.0).all() or (points[1, :] > 50.0).all() or (points[1, :] < -50.0).all():
@@ -573,7 +586,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
         bev = self.to_tensor(255 * bev.transpose(1,2,0))
         center_score = self.to_tensor(center_score)
         center_offset = self.to_tensor(center_offset)
-
+        visibility = torch.from_numpy(visibility)
+        
         # height
 
         # if len(tmp) == 0:
@@ -732,14 +746,8 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
                 result['bev'][4:13] = augm_bev_gt
                 result['center'] = augm_center_score
                 result['offset'] = augm_center_offset
-                # result['visibility'] = visibility
-                # result['height'] = height
-                # result['center_z'] = center_z
+                result['visibility'] = visibility
 
-                # if self.box == 'pseudo':
-                #     result.update(self.get_bbox_from_bev(result['bev'], result['view']))
-                # elif self.box == 'gt':
-                #     result.update(gtbox_3d)
 
                 bev_augm = torch.from_numpy(bev_augm)
                 result['extrinsics'] = result['extrinsics'] @ bev_augm

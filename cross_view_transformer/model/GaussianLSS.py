@@ -16,9 +16,11 @@ from cross_view_transformer.util.box_ops import box_cxcywh_to_xyxy
 from .sparsebev import sampling_4d, inverse_sigmoid
 from .sparsebev import MLP as MLP_sparse
 from .PointBEV_gridsample import PositionalEncodingMap, MLP
-from .decoder import BEVDecoder, DecoderBlock
+from .decoder import BEVDecoder, DecoderBlock, UpsamplingAdd
 # from .simple_bev import SimpleBEVDecoderLayer_pixel
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from typing import Optional
+from torchvision.models.resnet import Bottleneck
 
 class GaussianLSS(nn.Module):
     def __init__(
@@ -27,257 +29,113 @@ class GaussianLSS(nn.Module):
             backbone,
             head,
             neck,
+            # slot_attention,
+            # cross_attention,
             encoder=None,
             decoder=nn.Identity(),
             input_depth=False,
             depth_update=None,
             pc_range=None,
-            num_iters=1,
+            num_stages=1,
             error_tolerance=1.0,
             orth_scale=0.05,
+            depth_num=64,
+            opacity_filter=0.05,
     ):
         super().__init__()
     
         self.norm = Normalize()
         self.backbone = backbone
 
-        self.encoder = encoder
         self.head = head
         self.neck = neck
         self.decoder = decoder
         self.input_depth = input_depth
 
-        self.depth_num = 64
+        self.depth_num = depth_num
         self.depth_start = 1
         self.depth_max = 61
         self.pc_range = pc_range
-        self.LID = True
-        self.gs_render = GaussianRenderer(embed_dims, 1)
-
+        self.LID = False
+        self.gs_render = GaussianRenderer(embed_dims, num_stages, opacity_filter)
+        self.bev_refine = encoder
+    
         self.error_tolerance = error_tolerance
-        self.scale = 2
-        # self.orth_layer = GaussianOrthLayer(embed_dims, 2, extent=orth_scale)
-        self.orth_scale = orth_scale
-        
-        # self.feats_layers = nn.Sequential(
-        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+        # self.fusion = nn.Sequential(
+        #     nn.Conv2d(embed_dims*2, embed_dims, kernel_size=3, padding=1),
         #     nn.InstanceNorm2d(embed_dims),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-        #     nn.InstanceNorm2d(embed_dims),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=1, padding=0)
+        #     nn.GELU(),
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=1),
         # )
-        # self.depth_layers = nn.Sequential(
-        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-        #     nn.InstanceNorm2d(embed_dims),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-        #     nn.InstanceNorm2d(embed_dims),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(embed_dims, self.depth_num, kernel_size=1, padding=0)
-        # )
-        # self.opacity_layers = nn.Sequential(
-        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-        #     nn.InstanceNorm2d(embed_dims),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
-        #     nn.InstanceNorm2d(embed_dims),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(embed_dims, 1, kernel_size=1, padding=0)
-        # )
-        # self.bev_conv = nn.Conv2d(embed_dims * 2, embed_dims, kernel_size=3, padding=1)
-
-    def get_pixel_coords_3d(self, depth, lidar2img):
-        eps = 1e-5
-        
-        B, N = lidar2img.shape[:2]
-        H, W = depth.shape[2:]
-        scale = 224 // H
-        # coords_h = torch.arange(H, device=depth.device).float() * 224 / H
-        # coords_w = torch.arange(W, device=depth.device).float() * 480 / W
-        coords_h = torch.linspace(scale // 2, 224 - scale//2, H, device=depth.device).float()
-        coords_w = torch.linspace(scale // 2, 480 - scale//2, W, device=depth.device).float()
-        # coords_h = torch.linspace(0, 1, H, device=depth.device).float() * 224
-        # coords_w = torch.linspace(0, 1, W, device=depth.device).float() * 480
-
-        if self.LID:
-            index  = torch.arange(start=0, end=self.depth_num, step=1, device=depth.device).float()
-            index_1 = index + 1
-            bin_size = (self.depth_max - self.depth_start) / (self.depth_num * (1 + self.depth_num))
-            coords_d = self.depth_start + bin_size * index * index_1
-        else:
-            index  = torch.arange(start=0, end=self.depth_num, step=1, device=depth.device).float()
-            bin_size = (self.depth_max - self.depth_start) / self.depth_num
-            coords_d = self.depth_start + bin_size * index
-
-        D = coords_d.shape[0]
-        coords = torch.stack(torch.meshgrid([coords_w, coords_h, coords_d])).permute(1, 2, 3, 0) # W, H, D, 3
-        coords = torch.cat((coords, torch.ones_like(coords[..., :1])), -1)
-        coords[..., :2] = coords[..., :2] * torch.maximum(coords[..., 2:3], torch.ones_like(coords[..., 2:3])*eps)
-        img2lidars = lidar2img.inverse() # b n 4 4
-
-        coords = coords.view(1, 1, W, H, D, 4, 1).repeat(B, N, 1, 1, 1, 1, 1)
-        img2lidars = img2lidars.view(B, N, 1, 1, 1, 4, 4).repeat(1, 1, W, H, D, 1, 1)
-        coords3d = torch.matmul(img2lidars, coords).squeeze(-1)[..., :3] # B N W H D 3
-
-        return coords3d, coords_d
+        # self.depth_embed = nn.Sequential(*[
+        #     nn.Conv2d(depth_num, depth_num, 1),
+        #     nn.BatchNorm2d(depth_num),
+        #     nn.ReLU(),
+        #     nn.Conv2d(depth_num, embed_dims, 1),
+        # ])
+        # self.se_layer = SELayer(embed_dims)
     
-    def pred_depth(self, lidar2img, depth):
-        b, n, c, h, w = depth.shape
-        coords_3d, coords_d = self.get_pixel_coords_3d(depth, lidar2img) # b n w h d 3
-        coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
-        direction_vector = (coords_3d[:, 1] - coords_3d[:, 0])# F.normalize((coords_3d[:, 1] - coords_3d[:, 0]), dim=-1)
-
-        depth_prob = depth.softmax(1) # (b n) depth h w
-        pred_depth = (depth_prob * coords_d.view(1, self.depth_num, 1, 1)).sum(1)
-        pred_coords_3d = (depth_prob.unsqueeze(-1) * coords_3d).sum(1)  # (b n) h w 3
-
-        # print(depth_prob.shape, coords_d.shape, pred_depth.shape)
-        # print(coords_d)
-        # print(pred_depth[0,:5,0])
-        # print(depth_prob[0, :,:5,0])
-        uncertainty_map = (depth_prob * ((coords_d.view(1, -1, 1, 1) - pred_depth.unsqueeze(1))**2)).sum(1)
-        print(pred_coords_3d[0,:5,0])
-        print((pred_depth.unsqueeze(-1) * direction_vector + coords_3d[:,0])[0,:5,0])
-
-        # pred_depth = rearrange(pred_depth, '(b n) h w -> b n h w',b=b, n=n)
-
-        return pred_coords_3d, uncertainty_map, direction_vector
-    
-    def pred_depth_2(self, lidar2img, depth):
+    def pred_depth(self, lidar2img, depth, coords_3d=None):
         # b, n, c, h, w = depth.shape
-        coords_3d, coords_d = self.get_pixel_coords_3d(depth, lidar2img) # b n w h d 3
-        coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
-        direction_vector = F.normalize((coords_3d[:, 1] - coords_3d[:, 0]), dim=-1)
+        if coords_3d is None:
+            coords_3d, coords_d = get_pixel_coords_3d(depth, lidar2img, depth_num=self.depth_num) # b n w h d 3
+            coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
+            
+        direction_vector = F.normalize((coords_3d[:, 1] - coords_3d[:, 0]), dim=-1) # (b n) h w c
 
         # depth = rearrange(depth, 'b n ... -> (b n) ...')
         depth_prob = depth.softmax(1) # (b n) depth h w
         pred_coords_3d = (depth_prob.unsqueeze(-1) * coords_3d).sum(1)  # (b n) h w 3
-
-        delta_3d = pred_coords_3d.unsqueeze(1) - coords_3d
-        cov = (depth_prob.unsqueeze(-1).unsqueeze(-1) * (delta_3d.unsqueeze(-1) @ delta_3d.unsqueeze(-2))).sum(1)
-        scale = (self.error_tolerance ** 2) / 9 
-        cov = cov * scale
-
-        # pred_depth = (depth_prob * coords_d.view(1, self.depth_num, 1, 1)).sum(1)
-        # uncertainty_map = (depth_prob * ((coords_d.view(1, -1, 1, 1) - pred_depth.unsqueeze(1))**2)).sum(1)
-        # print(uncertainty_map)
-
-        # e = torch.zeros_like(direction_vector)
-        # e[..., 2] = 1
-        # v = torch.cross(direction_vector, e, dim=-1)
-        # v = F.normalize(v, dim=-1)
-        # w = torch.cross(direction_vector, v, dim=-1)
-        # w = F.normalize(w, dim=-1)
-        # cov = cov + scale * self.orth_scale * v.unsqueeze(-1) @ v.unsqueeze(-2) # 0.1 * (v.unsqueeze(-1) @ v.unsqueeze(-2) + w.unsqueeze(-1) @ w.unsqueeze(-2))
-
-        return pred_coords_3d, cov, direction_vector
-
-    def get_coords_3d(self, depth, lidar2img):
-        eps = 1e-5
-        img2lidars = lidar2img.inverse() # b n 4 4
-        B, N = lidar2img.shape[:2]
-        I, _, C, H, W = depth.shape
-        depth = rearrange(depth, 'i (b n) c h w -> i b n w h c', b=B, n=N)
-        scale = 224 // H
-
-        coords_h = torch.linspace(scale // 2, 224 - scale//2, H, device=depth.device).float()
-        coords_w = torch.linspace(scale // 2, 480 - scale//2, W, device=depth.device).float()
-
-        coords_wh = torch.stack(torch.meshgrid([coords_w, coords_h])).permute(1, 2, 0) # W, H, 2
-        coords_wh = repeat(coords_wh, '... -> i b n ...', i=I, b=B, n=N)
-        coords_whdhomo = torch.cat((coords_wh * depth, depth, torch.ones_like(depth)), dim=-1)[..., None] # i b n w h 4 1
-        # used for calculating direction vector
-        coords_whdhomo_right = torch.cat((coords_wh * (depth+1), depth+1, torch.ones_like(depth)), dim=-1)[..., None] # i b n w h 4 1
-
-        img2lidars = repeat(img2lidars, 'b n j k -> i b n w h j k', i=I, w=W, h=H) # i b n w h 4 4
-        coords3d = torch.matmul(img2lidars, coords_whdhomo).squeeze(-1)[..., :3] # i b n w h 3
-        coords3d = rearrange(coords3d, 'i b n w h d -> i b n h w d')
-
-        coords3d_right = torch.matmul(img2lidars, coords_whdhomo_right).squeeze(-1)[..., :3] # i b n w h 3
-        coords3d_right = rearrange(coords3d_right, 'i b n w h d -> i b n h w d')
-        direction_vector = F.normalize((coords3d_right - coords3d), dim=-1)
-        return coords3d, direction_vector
-
-    def densify(self, features, depth, opacities, lidar2img):
         
-        features = F.interpolate(features, scale_factor=self.scale, mode='bilinear')
-        depth = F.interpolate(depth, scale_factor=self.scale, mode='bilinear')
-        opacities = F.interpolate(opacities, scale_factor=self.scale, mode='bilinear')
-
-        coords_3d, coords_d = self.get_pixel_coords_3d(depth, lidar2img) # b n w h d 3
-        coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
-
-        depth_prob = depth.softmax(1) # (b n) depth h w
-        pred_coords_3d = (depth_prob.unsqueeze(-1) * coords_3d).sum(1)  # (b n) h w 3
+        # error_tolerance = self.error_tolerance * 2 if self.training else self.error_tolerance
+            
 
         delta_3d = pred_coords_3d.unsqueeze(1) - coords_3d
         cov = (depth_prob.unsqueeze(-1).unsqueeze(-1) * (delta_3d.unsqueeze(-1) @ delta_3d.unsqueeze(-2))).sum(1)
         scale = (self.error_tolerance ** 2) / 9 
         cov = cov * scale
 
-        return features, pred_coords_3d, cov, opacities
-    
+        return pred_coords_3d, cov
+
     def forward(self, batch):
-        b, n, _, h, w = batch['image'].shape
+        b, n, _, _, _ = batch['image'].shape
         image = batch['image'].flatten(0, 1).contiguous()            # b n c h w
+        # intrinsics = batch['intrinsics'].inverse()
+        # extrinsics = batch['extrinsics'].inverse()
+        
         lidar2img = batch['lidar2img']
         features = self.backbone(self.norm(image))
-        features, depth, opacities = self.neck(features)
-        # depth = self.depth_layers(features)
-        # opacities = self.opacity_layers(features).sigmoid()
-        # features = self.feats_layers(features)
-        # opacities = torch.ones_like(features[:, 0:1])
-        # opacities.requires_grad_ = False
-        # 1
-        # if depth is not None:
-            # depth = rearrange(depth,'(b n) ... -> b n ...', b=b,n=n)
-            # mean, uncertainty, direction_vector = self.pred_depth(lidar2img, depth)
-        means3D, cov3D, direction_vector = self.pred_depth_2(lidar2img, depth)
-            # means3D = self.pred_depth_2(lidar2img, depth)
         
-        # elif self.input_depth:
-        #     gt_depth = self.get_pixel_depth(batch['depth'], features, lidar2img, depth)
-        #     features[0] = torch.cat((features[0], gt_depth), dim=2)
-    
-        # features_densified, means3D_densified, uncertainty_densified, opacities_densified = self.densify(features, depth, opacities, lidar2img)
+        # coords_3d, coords_d = get_pixel_coords_3d(features[0], lidar2img)
+        # coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
+        # direction_vector = F.normalize(coords_3d[:, 0], dim=-1)
+        # direction_vector_embedding = self.ray_embed(direction_vector)
+        # direction_vector_embedding = rearrange(direction_vector_embedding, 'b h w d -> b d h w')
+        
+        features, depth, opacities = self.neck(features)
+        # depth_embed = self.depth_embed(depth)
+        # bev = self.bev_refine([features], lidar2img)
+        # features, depth, opacities = self.neck(features, direction_vector_embedding)
+        means3D, cov3D = self.pred_depth(lidar2img, depth)
 
-        # orth_features, sampling_points_cam_out, sampling_points = self.orth_layer(means3D, features, direction_vector, cov3D, lidar2img)
-        # scales = rearrange(scales, '(b n) d h w -> b (n h w) d', b=b, n=n)
-        # rotations = rearrange(rotations, '(b n) d h w -> b (n h w) d', b=b, n=n)
-        # cov3D = compute_covariance_matrix_batch(rotations, scales)
         cov3D = cov3D.flatten(-2, -1)
         cov3D = torch.cat((cov3D[..., 0:3], cov3D[..., 4:6], cov3D[..., 8:9]), dim=-1)
 
         features = rearrange(features, '(b n) d h w -> b (n h w) d', b=b, n=n)
-        # features = features + orth_features
+        # features = rearrange(features, '(b n) l d -> b (n l) d', b=b, n=n)
+        # features_3d = rearrange(features_3d, '(b n) l d -> b (n l) d', b=b, n=n)
+
+        # means3D = rearrange(means3D, '(b n) l d-> b (n l) d', b=b, n=n)
         means3D = rearrange(means3D, '(b n) h w d-> b (n h w) d', b=b, n=n)
+
         cov3D = rearrange(cov3D, '(b n) h w d -> b (n h w) d',b=b, n=n)
-
-        # features, means3D, cov3D, sampling_points_cam_list, gaussians_list = self.update(features, means3D, features.clone(), cov3D, direction_vector, opacities, lidar2img)
-        # cov3D = cov3D.flatten(-2, -1)
-        # cov3D = torch.cat((cov3D[..., 0:3], cov3D[..., 4:6], cov3D[..., 8:9]), dim=-1)
         opacities = rearrange(opacities, '(b n) d h w -> b (n h w) d', b=b, n=n)
-
-        # cov3D_densified = uncertainty_densified.flatten(-2, -1)
-        # cov3D_densified = torch.cat((cov3D_densified[..., 0:3], cov3D_densified[..., 4:6], cov3D_densified[..., 8:9]), dim=-1)
-
-        # features_densified = rearrange(features_densified, '(b n) d h w -> b (n h w) d', b=b, n=n)
-        # means3D_densified = rearrange(means3D_densified, '(b n) h w d-> b (n h w) d', b=b, n=n)
-        # cov3D_densified = rearrange(cov3D_densified, '(b n) h w d -> b (n h w) d',b=b, n=n)
-        # opacities_densified = rearrange(opacities_densified, '(b n) d h w -> b (n h w) d', b=b, n=n)
-
-        # features = torch.cat((features, features_densified), dim=1)
-        # means3D = torch.cat((means3D, means3D_densified), dim=1)
-        # cov3D = torch.cat((cov3D, cov3D_densified), dim=1)
-        # opacities = torch.cat((opacities, opacities_densified), dim=1)
-
-        # x, orthogonal_uncertainty = self.gs_render(features, mean, uncertainty, direction_vector, opacities, [b, n])
         
         x, num_gaussians = self.gs_render(features, means3D, cov3D, opacities)
-        # x, num_gaussians = self.gs_render(features, means3D, cov3D, opacities, orth_features, sampling_points)
-        # x = self.bev_conv(x)
+        # x = self.bev_refine(x, [features], lidar2img)
+        # x = self.se_layer(x, bev)
+        # x = self.fusion(torch.cat((x, bev), dim=1))
+        # x = x + bev
 
         # 50 -> 100 -> 200
         # x = multi_scale[0]        
@@ -291,32 +149,35 @@ class GaussianLSS(nn.Module):
         #     stage_outputs['stage'].append(output)
         #     stage_outputs.update(output)
 
-        # y = self.decoder(x)
-        y = self.decoder(x, from_dense=True)
+        y = self.decoder(x)
+        # y = self.decoder(x, from_dense=True)
         output = self.head(y)
 
-        mask = x[:, 0:1] != 0
-        for k in output:
-            if isinstance(output[k], spconv.SparseConvTensor):
-                output[k] = output[k].dense()
-        output['mask'] = mask
+        # mask = x[:, 0:1] != 0
+        # for k in output:
+        #     if isinstance(output[k], spconv.SparseConvTensor):
+        #         output[k] = output[k].dense()
+        # output['mask'] = mask
 
         # output['VEHICLE'] += short_cut
         output['mid_output'] = {
             'features':features, 
-            'mean':means3D, 
+            'mean': means3D, 
             'uncertainty':cov3D, 
             'opacities':opacities, 
-            'depth':depth, 
+            # 'depth':depth, 
             # 'sampling_points_cam_out':sampling_points_cam_out,
             # 'sampling_points': sampling_points,
-            'direction_vector': direction_vector,
+            # 'direction_vector': direction_vector,
             # 'orth_features': orth_features
+            # 'attn': attn,
+            # 'means': means,
+            # 'covs': covs,
+            # 'x':x,
+            # 'x_':x_,
+            # 'x_3d':x_3d,
         }
         output['num_gaussians'] = num_gaussians
-        # output['short_cut'] = short_cut
-        # stage_outputs['mid_output'] = {'mean':mean, 'uncertainty':uncertainty, 'opacities':opacities}
-
         return output
     
 class BEVCamera:
@@ -361,218 +222,161 @@ class BEVCamera:
         self.image_width = w
 
 class GaussianRenderer(nn.Module):
-    def __init__(self, embed_dims, scaling_modifier):
+    def __init__(self, embed_dims, num_stages, threshold=0.05):
         super().__init__()
         self.viewpoint_camera = BEVCamera()
         self.rasterizer = GaussianRasterizer()
         self.embed_dims = embed_dims
-        self.scaling_modifier = scaling_modifier
         self.epsilon = 1e-4
 
-        self.threshold = 0.05
+        self.threshold = threshold
         self.gamma = 1.0
-        # self.pos_encoder = PositionalEncodingMap(in_c=3, out_c=embed_dims, mid_c=embed_dims * 2)
-        # self.pc_range = [-61.0, -61.0, -10.0, 61.0, 61.0, 10.0] 
-        self.densify_num = 1
+        self.num_stages = num_stages
 
-    def get_orthogonal_variance(self, features, means3D, uncertainty, v):
-        # means3D = rearrange(means3D, 'b h w d-> b d h w')
-        uncertainty = rearrange(uncertainty, 'b h w -> b 1 h w')
-        v = rearrange(v, 'b h w d -> b d h w')
-        in_features = torch.cat((features, v), dim=1)
-        orthogonal_uncertainty = uncertainty * (self.orthogonalVarHead(in_features).sigmoid()) + self.epsilon
-        orthogonal_uncertainty = rearrange(orthogonal_uncertainty, 'b 1 h w -> b h w 1 1')
-
-        return orthogonal_uncertainty
-    
-    def PruneAndDenify(self, features, means3D, uncertainty, direction_vector, opacities):
-        b = features.shape[0]
-        device = features.device
-
-        mask = (opacities > self.threshold).squeeze(-1)
-        gaissuans = []
-        gammas = torch.linspace(-self.gamma, self.gamma, self.densify_num, device=device).view(1,self.densify_num) # here self.gamma = 1
-        coeff = 1 - ((gammas ** 2).sum() / self.densify_num)
-
-        for i in range(b):
-
-            features_pruned = features[i][mask[i]] # N, 128
-            means3D_pruned = means3D[i][mask[i]] # N, 3
-            uncertainty_pruned = uncertainty[i][mask[i]] # N
-            direction_vector_pruned = direction_vector[i][mask[i]] # N 3
-            opacities_pruned = opacities[i][mask[i]]
-
-            # each attributes has shape N, d
-            sigma = gammas * uncertainty_pruned.sqrt().unsqueeze(-1) # 1 5 * N 1 -> N 5
-            means3D_densified = means3D_pruned.unsqueeze(1) + direction_vector_pruned.unsqueeze(1) * sigma.unsqueeze(-1)
-            means3D_densified = means3D_densified.flatten(0,1)
-
-            uncertainty_densified = uncertainty_pruned.view(-1,1).repeat(1,self.densify_num).flatten(0,1) * coeff
-            uncertainty_densified = torch.clamp(uncertainty_densified, min=1e-4)
-
-            direction_vector_densified = direction_vector_pruned.unsqueeze(1).repeat(1,self.densify_num,1).flatten(0,1)
-            features_densified = features_pruned.unsqueeze(1).repeat(1,self.densify_num,1).flatten(0,1)
-            opacities_densified = opacities_pruned.unsqueeze(1).repeat(1,self.densify_num,1).flatten(0,1) * (1 / self.densify_num)
-            
-            gaissuans.append([features_densified, means3D_densified, uncertainty_densified, direction_vector_densified, opacities_densified])
-        
-        return gaissuans
+        h = w = 200 // 2 ** (num_stages-1)
+        self.h = h
+        self.w = w
+        # self.conv = nn.Sequential(
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=5, padding=2, bias=False),
+        #     nn.InstanceNorm2d(embed_dims),
+        #     nn.GELU(),
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1, bias=False),
+        #     nn.InstanceNorm2d(embed_dims),
+        #     nn.GELU(),
+        #     nn.Conv2d(embed_dims, embed_dims, kernel_size=1),
+        # )
+        # self.bev_embedding =  nn.Embedding(h * w, self.embed_dims)
+        # self.conv1 = nn.ModuleList(
+        #     [
+        #         nn.Sequential(
+        #             nn.Conv2d(embed_dims, embed_dims*2, kernel_size=3, padding=1, bias=False),
+        #             nn.GELU(),
+        #             nn.Conv2d(embed_dims*2, embed_dims, kernel_size=3, padding=1, bias=False),
+        #     ) for i in range(num_stages)
+        #     ]
+        # )
+        # self.conv2 = nn.ModuleList(
+        #     [
+        #         nn.Sequential(
+        #             nn.Conv2d(embed_dims, embed_dims*2, kernel_size=3, padding=1),
+        #             nn.InstanceNorm2d(embed_dims),
+        #             nn.GELU(),
+        #             nn.Conv2d(embed_dims*2, embed_dims, kernel_size=3, padding=1),
+        #             # nn.InstanceNorm2d(embed_dims),
+        #             # nn.GELU(),
+        #             # nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1)
+        #     ) for i in range(num_stages)
+        #     ]
+        # )
+        # self.decoder = nn.ModuleList(
+        #     [UpsamplingAdd(embed_dims, embed_dims) for i in range(num_stages-1)]
+        # )
+        self.upsample = nn.ModuleList(UpsampleBlock(embed_dims, embed_dims, 2**(num_stages-1-i)) for i in range(num_stages-1))
+        self.conv = nn.Sequential(
+            nn.Conv2d(embed_dims*num_stages, embed_dims*2, 3, padding=1),
+            nn.GELU(),
+            Bottleneck(embed_dims*2, embed_dims//2),
+            Bottleneck(embed_dims*2, embed_dims//2),
+            Bottleneck(embed_dims*2, embed_dims//2),
+            nn.Conv2d(embed_dims*2, embed_dims, 1),
+        )
+        self.pc_range = [-50, -50, -4, 50, 50, 4]
 
     def forward(self, features, means3D, cov3D, opacities):#, orth_features, orth_means):
         """
-        features: (b n) d h w
-        means3D: (b n) h w 3
-        uncertainty: (b n) h w
-        direction_vector: (b n) h w 3
-        opacities: (b n) h w 1
+        features: b G d*stages
+        means3D: b G 3
+        uncertainty: b G 6
+        opacities: b G 1*stages
         """ 
         b = features.shape[0]
         device = means3D.device
-        # num_sample_points = orth_features.shape[-2]
-        # features = rearrange(features, '(b n) d h w -> b (n h w) d', b=b, n=n)
-        # means3D = rearrange(means3D, '(b n) h w d-> b (n h w) d', b=b, n=n)
-        # uncertainty = rearrange(uncertainty, '(b n) h w -> b (n h w)',b=b, n=n)
-        # direction_vector = rearrange(direction_vector, '(b n) h w d-> b (n h w) d', b=b, n=n)
-        # opacities = rearrange(opacities, '(b n) d h w -> b (n h w) d', b=b, n=n)
-        # gaussians = self.PruneAndDenify(features, means3D, uncertainty, direction_vector, opacities)
-
-        # cov3D = uncertainty[..., None, None] * (direction_vector.unsqueeze(-1) @ direction_vector.unsqueeze(-2))
-        # e = torch.zeros_like(direction_vector)
-        # e[..., 2] = 1
-        # v = torch.cross(direction_vector, e, dim=-1)
-        # v = F.normalize(v, dim=-1)
-        # w = torch.cross(direction_vector, v, dim=-1)
-        # w = F.normalize(w, dim=-1)
-        # # orthogonal_uncertainty = self.get_orthogonal_variance(features, means3D, uncertainty, v)
-        # # cov3D = cov3D + orthogonal_uncertainty * (v.unsqueeze(-1) @ v.unsqueeze(-2)) + self.epsilon * (w.unsqueeze(-1) @ w.unsqueeze(-2))
-        # cov3D = cov3D + self.epsilon * (v.unsqueeze(-1) @ v.unsqueeze(-2) + w.unsqueeze(-1) @ w.unsqueeze(-2))
-
-        mask = (opacities > self.threshold)
-        # opacities = mask.float()
-        mask = mask.squeeze(-1)
-
-        # bev_out_list = []
-        # for j in range(num_iter):
-        #     bev_out = []
-        #     for i in range(b):
-        #         rendered_bev, _ = self.rasterizer(
-        #             means3D=means3D[j, i],
-        #             means2D=None,
-        #             shs=None,  # No SHs used
-        #             colors_precomp=features[j, i],
-        #             opacities=opacities[j, i],
-        #             scales=None,
-        #             rotations=None,
-        #             cov3D_precomp=cov3D[j, i]
-        #         )
-        #         bev_out.append(rendered_bev)
-        #     bev_out_list.append(torch.stack(bev_out, dim=0))
-        # return bev_out_list
-
-        bev_out = []
-        self.set_render_scale(int(200), int(200))
-        self.set_Rasterizer(device)
-        for i in range(b):
-            # means3D_input = means3D[i][mask[i]]
-            # orth_opacities = repeat(opacities[i][mask[i]], '... d -> ... p d', p=num_sample_points)
-            # num_gaussians = means3D_input.shape[0]
-            # means3D_input = torch.cat((means3D_input, orth_means[i][mask[i]].flatten(0,1)), dim=0)
-            # features_input = torch.cat((features[i][mask[i]], orth_features[i][mask[i]].flatten(0,1)), dim=0)
-            # opacities_input = torch.cat((opacities[i][mask[i]], orth_opacities.flatten(0,1)), dim=0)
-            # cov3D_input = torch.cat((cov3D[i][mask[i]], torch.zeros((num_gaussians*num_sample_points, 6), device=device)), dim=0)
-            # rendered_bev, _ = self.rasterizer(
-            #     means3D=means3D_input,
-            #     means2D=None,
-            #     shs=None,  # No SHs used
-            #     colors_precomp=features_input,
-            #     opacities=opacities_input,
-            #     scales=None,
-            #     rotations=None,
-            #     cov3D_precomp=cov3D_input
-            # )
-            rendered_bev, _ = self.rasterizer(
-                means3D=means3D[i][mask[i]],
-                means2D=None,
-                shs=None,  # No SHs used
-                colors_precomp=features[i][mask[i]],
-                opacities=opacities[i][mask[i]],
-                scales=None,
-                rotations=None,
-                cov3D_precomp=cov3D[i][mask[i]]
-            )
-            # orth_opacities = repeat(opacities[i][mask[i]], '... d -> ... p d', p=num_sample_points)
-            # orth_bev, _ = self.rasterizer(
-            #     means3D=orth_means[i][mask[i]].flatten(0,1),
-            #     means2D=None,
-            #     shs=None,  # No SHs used
-            #     colors_precomp=orth_features[i][mask[i]].flatten(0,1),
-            #     opacities=orth_opacities.flatten(0,1),
-            #     scales=None,
-            #     rotations=None,
-            #     cov3D_precomp=torch.zeros((num_gaussians*num_sample_points, 6), device=device)
-            # )
-            # bev_out.append(torch.cat((rendered_bev, orth_bev), dim=0))
-            bev_out.append(rendered_bev)
-
-        # multi_scale_output = []
-
-        # for scale in [0.25, 0.5, 1]:
-        #     bev_out = []
-        #     self.set_render_scale(int(200 * scale), int(200 * scale))
-        #     self.set_Rasterizer(device)
-        #     for i in range(b):
-        #         rendered_bev, _ = self.rasterizer(
-        #             means3D=means3D[i][mask[i]],
-        #             means2D=None,
-        #             shs=None,  # No SHs used
-        #             colors_precomp=features[i][mask[i]],
-        #             opacities=opacities[i][mask[i]],
-        #             scales=None,
-        #             rotations=None,
-        #             cov3D_precomp=cov3D[i][mask[i]]
-        #         )
-        #         bev_out.append(rendered_bev)
-        #     multi_scale_output.append(torch.stack(bev_out, dim=0))
-    
+        
+        # filter pc range
+        mask_pos = (means3D[:, :, 2] >= self.pc_range[2]) & (means3D[:, :, 2] <= self.pc_range[5])
+                # (means3D[:, :, 0] >= self.pc_range[0]) & (means3D[:, :, 0] <= self.pc_range[3]) & \
+                # (means3D[:, :, 1] >= self.pc_range[1]) & (means3D[:, :, 1] <= self.pc_range[4]) & \
+                # (means3D[:, :, 2] >= self.pc_range[2]) & (means3D[:, :, 2] <= self.pc_range[5])
+        # mask = (opacities > self.threshold)
+        # mask = mask.squeeze(-1)
+        # mask = mask | mask_pos
         # bev_out = []
-        # num_gaussians = []
+        # mask = (opacities > self.threshold)
+        # mask = mask.squeeze(-1)
+        # self.set_render_scale(200, 200)
+        # self.set_Rasterizer(device)
         # for i in range(b):
-        #     features, means3D, uncertainty, direction_vector, opacities = gaussians[i]
-        #     num_gaussians.append(features.shape[0])
-        #     cov3D = uncertainty[..., None, None] * (direction_vector.unsqueeze(-1) @ direction_vector.unsqueeze(-2))
-        #     e = torch.zeros_like(direction_vector)
-        #     e[..., 2] = 1
-        #     v = torch.cross(direction_vector, e, dim=-1)
-        #     v = F.normalize(v, dim=-1)
-        #     w = torch.cross(direction_vector, v, dim=-1)
-        #     # orthogonal_uncertainty = self.get_orthogonal_variance(features, means3D, uncertainty, v)
-        #     # cov3D = cov3D + orthogonal_uncertainty * (v.unsqueeze(-1) @ v.unsqueeze(-2)) + self.epsilon * (w.unsqueeze(-1) @ w.unsqueeze(-2))
-        #     cov3D = cov3D + self.epsilon * (v.unsqueeze(-1) @ v.unsqueeze(-2) + w.unsqueeze(-1) @ w.unsqueeze(-2))
-        #     cov3D = cov3D.flatten(-2, -1)
-        #     cov3D = torch.cat((cov3D[..., 0:3], cov3D[..., 4:6], cov3D[..., 8:9]), dim=-1)
-
-        #     # mean_normalized = means3D.clone()
-        #     # mean_normalized[..., 0] = (mean_normalized[..., 0] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
-        #     # mean_normalized[..., 1] = (mean_normalized[..., 1] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
-        #     # mean_normalized[..., 2] = (mean_normalized[..., 2] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2])
-        #     # mean_normalized = torch.clamp(mean_normalized, min=0.0, max=1.0)
-        #     # features = features + self.pos_encoder(mean_normalized)
-
         #     rendered_bev, _ = self.rasterizer(
-        #         means3D=means3D,
+        #         means3D=means3D[i][mask[i]],
         #         means2D=None,
         #         shs=None,  # No SHs used
-        #         colors_precomp=features,
-        #         opacities=opacities,
+        #         colors_precomp=features[i][mask[i]],
+        #         opacities=opacities[i][mask[i]],
         #         scales=None,
         #         rotations=None,
-        #         cov3D_precomp=cov3D
+        #         cov3D_precomp=cov3D[i][mask[i]]
         #     )
         #     bev_out.append(rendered_bev)
-        # print("Total points:", (mask.detach().float().sum(-1)).mean().cpu().numpy())
-        # print("Total points:", sum(num_gaussians) / len(num_gaussians))
-        # return torch.stack(bev_out, dim=0), None
-        return torch.stack(bev_out, dim=0), (mask.detach().float().sum(1)).mean().cpu()
+            
+        # bev_emdding = repeat(self.bev_embedding.weight, '... -> b ...', b=b)
+        # bev_emdding = rearrange(bev_emdding, 'b (h w) d -> b d h w', h=self.h, w=self.w)
+        # features = torch.split(features, self.embed_dims, dim=-1)
+        num_gaussians = 0.0
+        multi_scale_bev = []
+        for stage in range(self.num_stages):
+            mask = (opacities[..., stage:stage+1] > self.threshold)
+            # mask = (opacities > self.threshold)
+            mask = mask.squeeze(-1)
+            mask = mask & mask_pos
+
+            bev_out = []
+            self.set_render_scale(self.h * 2 ** stage, self.w * 2 ** stage)
+            self.set_Rasterizer(device)
+            for i in range(b):
+                rendered_bev, _ = self.rasterizer(
+                    means3D=means3D[i][mask[i]],
+                    means2D=None,
+                    shs=None,  # No SHs used
+                    # colors_precomp=features[stage][i][mask[i]],
+                    colors_precomp=features[i][mask[i]],
+                    opacities=opacities[..., stage:stage+1][i][mask[i]],
+                    # opacities=opacities[i][mask[i]],
+                    scales=None,
+                    rotations=None,
+                    cov3D_precomp=cov3D[i][mask[i]]
+                )
+                bev_out.append(rendered_bev)
+
+            bev_out = torch.stack(bev_out, dim=0)
+            if stage < self.num_stages-1:
+                bev_out = self.upsample[stage](bev_out)
+            multi_scale_bev.append(bev_out)
+            num_gaussians += (mask.detach().float().sum(1)).mean().cpu()
+
+        x = torch.cat(multi_scale_bev, dim=1)
+        x = self.conv(x)
+        # x = bev_emdding
+        # for i, bev in enumerate(multi_scale_bev):
+        #     bev = self.conv1[i](bev)
+        #     if i-1 >=0:
+        #         x = self.decoder[i-1](x, bev)
+        #     else:
+        #         x = x + bev
+        #     x = self.conv2[i](x)
+
+        return x, num_gaussians
+        
+        # bev = torch.stack(bev_out, dim=0)
+        # bev_emdding = repeat(self.bev_embedding.weight, '... -> b ...', b=b)
+        # bev_emdding = rearrange(bev_emdding, 'b (h w) d -> b d h w', h=self.h, w=self.w)
+        # bev = bev + bev_emdding
+        # bev_mask = bev[:, 0:1] == 0
+        # mask_embedding = repeat(self.mask_embedding.weight, '1 d -> b d h w', b=b, h=200, w=200)
+        # mask_embedding = mask_embedding * bev_mask
+        # bev = bev + mask_embedding
+        # bev = self.conv(bev) 
+        # return bev, (mask.detach().float().sum(1)).mean().cpu()
+
 
     @torch.no_grad()
     def set_Rasterizer(self, device):
@@ -587,7 +391,7 @@ class GaussianRenderer(nn.Module):
             tanfovx=tanfovx,
             tanfovy=tanfovy,
             bg=bg_color,
-            scale_modifier=self.scaling_modifier,
+            scale_modifier=1,
             viewmatrix=self.viewpoint_camera.world_view_transform.to(device),
             projmatrix=self.viewpoint_camera.full_proj_transform.to(device),
             sh_degree=0,  # No SHs used for random Gaussians
@@ -611,10 +415,10 @@ class GaussianRenderer(nn.Module):
             opacities, 
             shape, 
             cam_index, 
-            y_range, 
-            x_range, 
-            orth_features, 
-            orth_means
+            y_range=None, 
+            x_range=None, 
+            # orth_features, 
+            # orth_means
         ):
         
         """
@@ -629,175 +433,43 @@ class GaussianRenderer(nn.Module):
         device = means3D.device
         self.set_Rasterizer(device)
         
-        # features = rearrange(features[:, :6*28*60], 'b (n h w) d -> (b n) d h w', n=6, h=28, w=60)
-        # means3D = rearrange(means3D[:, :6*28*60], 'b (n h w) d -> (b n) h w d', n=6, h=28, w=60)
-        # uncertainty = rearrange(uncertainty[:, :6*28*60], 'b (n h w) j k -> (b n) h w j k', n=6, h=28, w=60)
-        # opacities = rearrange(opacities[:, :6*28*60], 'b (n h w) d -> (b n) h w d', n=6, h=28, w=60)
+        if y_range is not None:
+            features = rearrange(features[cam_index, :, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'd h w -> 1 (h w) d')
+            means3D = rearrange(means3D[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w d-> 1 (h w) d')
+            # uncertainty = rearrange(uncertainty[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w -> 1 (h w)')
+            cov3D = rearrange(cov3D[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w d-> 1 (h w) d')
+            # direction_vector = rearrange(direction_vector[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w d-> 1 (h w) d')
+            opacities = rearrange(opacities[cam_index, :, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'd h w -> 1 (h w) d')
+        else:
+            mask = (opacities[cam_index] > self.threshold).view(1, -1)
+            features = rearrange(features[cam_index], 'd h w -> 1 (h w) d')[mask][None]
+            means3D = rearrange(means3D[cam_index], 'h w d -> 1 (h w) d')[mask][None]
+            cov3D = rearrange(cov3D[cam_index], 'h w d-> 1 (h w) d')[mask][None]
+            opacities = rearrange(opacities[cam_index], 'd h w -> 1 (h w) d')[mask][None]
 
-        
-        features = rearrange(features[cam_index, :, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'd h w -> 1 (h w) d')
-        means3D = rearrange(means3D[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w d-> 1 (h w) d')
-        # uncertainty = rearrange(uncertainty[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w -> 1 (h w)')
-        cov3D = rearrange(cov3D[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w d-> 1 (h w) d')
-        # direction_vector = rearrange(direction_vector[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w d-> 1 (h w) d')
-        opacities = rearrange(opacities[cam_index, :, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'd h w -> 1 (h w) d')
-        # gaussians = self.PruneAndDenify(features, means3D, uncertainty, direction_vector, opacities)
-
-        # cov3D = uncertainty[..., None, None] * (direction_vector.unsqueeze(-1) @ direction_vector.unsqueeze(-2))
-        # e = torch.zeros_like(direction_vector)
-        # e[..., 2] = 1
-        # v = torch.cross(direction_vector, e, dim=-1)
-        # v = F.normalize(v, dim=-1)
-        # w = torch.cross(direction_vector, v, dim=-1)
-        # w = F.normalize(w, dim=-1)
-        # # orthogonal_uncertainty = self.get_orthogonal_variance(features, means3D, uncertainty, v)
-        # # cov3D = cov3D + orthogonal_uncertainty * (v.unsqueeze(-1) @ v.unsqueeze(-2)) + self.epsilon * (w.unsqueeze(-1) @ w.unsqueeze(-2))
-        # cov3D = cov3D + self.epsilon * (v.unsqueeze(-1) @ v.unsqueeze(-2) + w.unsqueeze(-1) @ w.unsqueeze(-2))
-        # print(cov3D)
-        # cov3D = uncertainty.flatten(-2, -1)
-        # cov3D = torch.cat((cov3D[..., 0:3], cov3D[..., 4:6], cov3D[..., 8:9]), dim=-1)
-        num_points = orth_features.shape[-2]
-        orth_features = rearrange(orth_features[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w p d -> 1 (h w p) d')
-        orth_means = rearrange(orth_means[cam_index, y_range[0]:y_range[1], x_range[0]:x_range[1]], 'h w p d -> 1 (h w p) d')
-
-        num_gaussians = features.shape[1]
-        # mask = (opacities > self.threshold).squeeze(-1)
-
-        # bev_out_list = []
-        # for j in range(num_iter):
-        #     bev_out = []
-        #     for i in range(b):
-        #         rendered_bev, _ = self.rasterizer(
-        #             means3D=means3D[j, i],
-        #             means2D=None,
-        #             shs=None,  # No SHs used
-        #             colors_precomp=features[j, i],
-        #             opacities=opacities[j, i],
-        #             scales=None,
-        #             rotations=None,
-        #             cov3D_precomp=cov3D[j, i]
-        #         )
-        #         bev_out.append(rendered_bev)
-        #     bev_out_list.append(torch.stack(bev_out, dim=0))
-        # return bev_out_list
         bev_out = []
         for i in range(b):
-            opacities_orth = repeat(opacities[i], '... d -> ... p d', p=num_points)
             rendered_bev, _ = self.rasterizer(
-                means3D=torch.cat((means3D[i], orth_means[i]), dim=0),
+                means3D=means3D[i],
                 means2D=None,
                 shs=None,  # No SHs used
-                colors_precomp=torch.cat((features[i], orth_features[i]), dim=0),
-                opacities=torch.cat((opacities[i], opacities_orth.flatten(0,1)), dim=0),
+                colors_precomp=features[i],
+                opacities=opacities[i],
                 scales=None,
                 rotations=None,
-                cov3D_precomp=torch.cat((cov3D[i], torch.zeros((num_gaussians*num_points, 6), device=device)), dim=0),
+                cov3D_precomp=cov3D[i],
             )
             bev_out.append(rendered_bev)
-
-        # bev_out = []
-        # num_gaussians = []
-        # for i in range(b):
-        #     features, means3D, uncertainty, direction_vector, opacities = gaussians[i]
-        #     num_gaussians.append(features.shape[0])
-        #     cov3D = uncertainty[..., None, None] * (direction_vector.unsqueeze(-1) @ direction_vector.unsqueeze(-2))
-        #     e = torch.zeros_like(direction_vector)
-        #     e[..., 2] = 1
-        #     v = torch.cross(direction_vector, e, dim=-1)
-        #     v = F.normalize(v, dim=-1)
-        #     w = torch.cross(direction_vector, v, dim=-1)
-        #     # orthogonal_uncertainty = self.get_orthogonal_variance(features, means3D, uncertainty, v)
-        #     # cov3D = cov3D + orthogonal_uncertainty * (v.unsqueeze(-1) @ v.unsqueeze(-2)) + self.epsilon * (w.unsqueeze(-1) @ w.unsqueeze(-2))
-        #     cov3D = cov3D + self.epsilon * (v.unsqueeze(-1) @ v.unsqueeze(-2) + w.unsqueeze(-1) @ w.unsqueeze(-2))
-        #     cov3D = cov3D.flatten(-2, -1)
-        #     cov3D = torch.cat((cov3D[..., 0:3], cov3D[..., 4:6], cov3D[..., 8:9]), dim=-1)
-
-        #     # mean_normalized = means3D.clone()
-        #     # mean_normalized[..., 0] = (mean_normalized[..., 0] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
-        #     # mean_normalized[..., 1] = (mean_normalized[..., 1] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
-        #     # mean_normalized[..., 2] = (mean_normalized[..., 2] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2])
-        #     # mean_normalized = torch.clamp(mean_normalized, min=0.0, max=1.0)
-        #     # features = features + self.pos_encoder(mean_normalized)
-
-        #     rendered_bev, _ = self.rasterizer(
-        #         means3D=means3D,
-        #         means2D=None,
-        #         shs=None,  # No SHs used
-        #         colors_precomp=features,
-        #         opacities=opacities,
-        #         scales=None,
-        #         rotations=None,
-        #         cov3D_precomp=cov3D
-        #     )
-        #     bev_out.append(rendered_bev)
-        # print("Filterd points:", num_gaussians - (mask.detach().float().sum(-1)).mean().cpu().numpy())
-        # print("Total points:", sum(num_gaussians) / len(num_gaussians))
+    
         return torch.stack(bev_out, dim=0), None # orthogonal_uncertainty
-
-class Neck(nn.Module):
-    def __init__(self, in_channels, embed_dims, depth_num):
-        super().__init__()
-
-        self.proj1 = nn.Conv2d(in_channels[-1], embed_dims, 1) # stage 4
-        self.proj2 = nn.Conv2d(in_channels[-2]+embed_dims, embed_dims, 1) # stage 3 4
-        self.proj3 = nn.Conv2d(in_channels[-3]+embed_dims, embed_dims, 1) # stage 2 3 4
-        self.depth_head = MLP(embed_dims, embed_dims * 2, depth_num)
-        self.opacities_head = MLP(embed_dims, embed_dims * 2, 1)
-
-        self.depth_num = 64
-        self.depth_start = 1
-        self.depth_max = 61
-        self.LID = True
-
-    def get_pixel_coords_3d(self, img_feats):
-        eps = 1e-5
-        
-        B, N, _, H, W = img_feats.shape
-        device = img_feats.device
-        scale = 224 // H
-        # coords_h = torch.arange(H, device=depth.device).float() * 224 / H
-        # coords_w = torch.arange(W, device=depth.device).float() * 480 / W
-        coords_h = torch.linspace(scale // 2, 224 - scale//2, H, device=device).float()
-        coords_w = torch.linspace(scale // 2, 480 - scale//2, W, device=device).float()
-
-        if self.LID:
-            index  = torch.arange(start=0, end=self.depth_num, step=1, device=device).float()
-            index_1 = index + 1
-            bin_size = (self.depth_max - self.depth_start) / (self.depth_num * (1 + self.depth_num))
-            coords_d = self.depth_start + bin_size * index * index_1
-        else:
-            index  = torch.arange(start=0, end=self.depth_num, step=1, device=device).float()
-            bin_size = (self.depth_max - self.depth_start) / self.depth_num
-            coords_d = self.depth_start + bin_size * index
-
-        coords = torch.stack(torch.meshgrid([coords_w, coords_h])).permute(1, 2, 0) # W, H, 2
-        coords = repeat(coords, '... -> b n ...', b=B, n=N) # b n w h 2
-
-        return coords, coords_d
-
-    def forward(self, img_feats, lidar2img):
-        b, n = lidar2img.shape[:2]
-        p4 = self.proj1(img_feats[-1])
-        p3 = self.proj2(torch.cat((img_feats[-2], F.interpolate(p4, scale_factor=2, mode="bilinear", align_corners=False)), dim=1))
-        p2 = self.proj3(torch.cat((img_feats[-3], F.interpolate(p3, scale_factor=2, mode="bilinear", align_corners=False)), dim=1))
-
-        p4 = rearrange(p4, '(b n) d h w -> b n h w d')
-        p3 = rearrange(p3, '(b n) d h w -> b n h w d')
-        p2 = rearrange(p2, '(b n) d h w -> b n h w d')
-        
-        p4_depth, p4_opacities = self.depth_head(p4).softmax(), self.opacities_head(p4).sigmoid()
-        p3_depth, p3_opacities = self.depth_head(p3).softmax(), self.opacities_head(p3).sigmoid()
-        p2_depth, p2_opacities = self.depth_head(p2).softmax(), self.opacities_head(p2).sigmoid()
-
-        pass
 
 class Up(nn.Module):
     """Upscaling then double conv"""
 
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, scale_factor):
         super().__init__()
 
-        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear', align_corners=False)
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
             nn.BatchNorm2d(in_channels),
@@ -977,79 +649,265 @@ class GaussianUpdateLayer(nn.Module):
 
         return features, means3D, cov3D, sampling_points_cam
 
-class GaussianOrthLayer(nn.Module):
-    def __init__(self, embed_dims, num_points, extent=0.5):
+class UpsampleBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, scale_factor):
+        super(UpsampleBlock, self).__init__()
+        self.scale_factor = scale_factor
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.norm = nn.LayerNorm(out_channels)  # Optional: use if appropriate
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = F.interpolate(x, scale_factor=self.scale_factor, mode='bilinear', align_corners=False)
+        x = self.conv(x)
+        x = rearrange(x, 'b d h w -> b h w d')
+        x = self.norm(x)
+        x = rearrange(x, 'b h w d -> b d h w ')
+        x = self.relu(x)
+        return x
+
+class MLPConv2D(nn.Module):
+    def __init__(self, embed_dims, out_dims):
         super().__init__()
-        self.extent = extent
-        self.num_points = num_points
-        self.positiona_encoding = PositionalEncodingMap(in_c=3, out_c=embed_dims, mid_c=embed_dims * 2)
-        # self.mlp = MLP(num_points * embed_dims, embed_dims*2, embed_dims)
-        self.pc_range = [-50.0, -50.0, -4.0, 50.0, 50.0, 4.0]
+        self.layer = nn.Sequential(
+            nn.Conv2d(embed_dims, out_dims, kernel_size=3, padding=1),
+            nn.InstanceNorm2d(out_dims),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dims, out_dims, kernel_size=3, padding=1),
+            nn.InstanceNorm2d(out_dims),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dims, out_dims, kernel_size=1, padding=0)
+        )
+    
+    def forward(self, x):
+        return self.layer(x)
+    
+class GaussianNeck(nn.Module):
+    def __init__(self, in_dims, scale, embed_dims, num_scales=2):
+        super().__init__()
 
-    def sampling(self, img_features, sampling_points, lidar2img):
-        """
-        sampling_offsets: b n l 3 p
-        lidar2img: b n 4 4
-        """
-        b, n = sampling_points.shape[:2]
-        lidar2img = rearrange(lidar2img, 'b n i j -> b n 1 1 i j')
+        self.scale_projs = nn.ModuleList(
+            [nn.Sequential(
+                    nn.Conv2d(dim, embed_dims, kernel_size=3, padding=1),
+                    nn.InstanceNorm2d(embed_dims),
+                    nn.GELU(),
+                    nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1),
+            ) 
+                for dim in in_dims]
+        )
+        self.proj = nn.Linear(embed_dims * num_scales, embed_dims)
+        self.pos_embed = PositionEmbeddingSine(embed_dims//2, normalize=True)
+        self.ray_embed = PositionalEncodingMap(in_c=3, out_c=embed_dims, mid_c=embed_dims * 2)
 
-        # expand
-        ones = torch.ones_like(sampling_points[..., :1])
-        sampling_points = torch.cat([sampling_points, ones], dim=-1).unsqueeze(-1)  # b n l p 4 1
+        self.self_attn = AttentionBlock(embed_dims, 4, 0.1)
+        self.cross_attn = AttentionBlock(embed_dims, 4, 0.1)
+        
+        self.feats_head = MLPConv2D(embed_dims, embed_dims)
+        self.depth_head = MLPConv2D(embed_dims, 64)
+        self.opacity_head = MLPConv2D(embed_dims, 1)
 
-        # project 2d
-        sampling_points_cam = torch.matmul(lidar2img, sampling_points).squeeze(-1) # b n l p 4
-        homo = sampling_points_cam[..., 2:3]
-        homo_nonzero = torch.maximum(homo, torch.zeros_like(homo) + 1e-6)
-        sampling_points_cam = sampling_points_cam[..., 0:2] / homo_nonzero  # b n l p 2
-        sampling_points_cam_out = sampling_points_cam.clone()
+        self.error_tolerance = 0.5
+        self.scale = scale
 
-        # normalize
-        sampling_points_cam[..., 0] /= 480
-        sampling_points_cam[..., 1] /= 224
-        sampling_points_cam = sampling_points_cam * 2 - 1
+    def get_means_cov(self, depth_prob, coords_3d):
+        coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
 
-        sampling_points_cam = sampling_points_cam.flatten(0, 1) # (b n) l p 2
-        sampled_features = F.grid_sample(img_features, sampling_points_cam, mode='bilinear', align_corners=False)
+        means3D = (depth_prob.unsqueeze(-1) * coords_3d).sum(1)  # (b n) h w 3
 
-        return rearrange(sampled_features, '(b n) d l p -> b n l p d', b=b, n=n), sampling_points_cam_out
+        delta_3d = means3D.unsqueeze(1) - coords_3d
+        cov3D = (depth_prob.unsqueeze(-1).unsqueeze(-1) * (delta_3d.unsqueeze(-1) @ delta_3d.unsqueeze(-2))).sum(1)
+        scale = (self.error_tolerance ** 2) / 9 
+        cov3D = cov3D * scale
 
-    def forward(self, means3D, img_features, direction_vector, cov3D, lidar2img):  
-        b, n = lidar2img.shape[:2]
-        device = means3D.device  
+        return means3D, cov3D
 
-        means3D = rearrange(means3D, '(b n) h w d-> b n (h w) d', b=b, n=n)
-        direction_vector = rearrange(direction_vector, '(b n) h w d-> b n (h w) d', b=b, n=n)
-        cov3D = rearrange(cov3D, '(b n) h w i j -> b n (h w) i j', b=b, n=n)
+    def forward(self, feats, lidar2img):
+        b, _, h, w = feats[0].shape
+        device = feats[0].device
 
-        # get uncertain mean
-        uncertainty = torch.linspace(-1.5, 1.5, 5, device=device).view(1, 1, 1, 1, 5) * (direction_vector.unsqueeze(-2) @ cov3D @ direction_vector.unsqueeze(-1)).sqrt() * direction_vector.unsqueeze(-1) # b n l 3 p1
-        means3D = means3D.unsqueeze(-1) + uncertainty
+        coords3d, _ = get_pixel_coords_3d(feats[0], lidar2img) # B N W H D 3
+        feats = [self.scale_projs[i](F.interpolate(feats[i], scale_factor=self.scale[i])) for i in range(len(feats))]
+        feats = [rearrange(f, 'b d h w -> b (h w) d') for f in feats]
 
-        # get orthogonal direction vector
-        e = torch.zeros_like(direction_vector)
-        e[..., -1] = 1
-        orth_vector = torch.cross(direction_vector, e)
+        pos_embed = self.pos_embed(
+            torch.zeros(
+                (b,1,h,w),
+                device=device,
+                requires_grad=False,
+            )
+        )
+        pos_embed = rearrange(pos_embed, 'b d h w -> b (h w) d') 
+        pos_embed = pos_embed.repeat(1, len(feats), 1) # b (h w l) d
+        features_tokens = torch.cat(feats, dim=1) # b (h w l) d
+        features_channels = torch.cat(feats, dim=-1) # b (h w) (d l)
+        features = self.proj(features_channels)
+        features = self.self_attn(features, features_tokens, features_tokens, k_pos_embed=pos_embed)
 
-        # get sampling points
-        sampling_offsets = torch.linspace(-self.extent, self.extent, self.num_points, device=device).view(1, 1, 1, 1, self.num_points) # num_points
-        sampling_offsets = orth_vector.unsqueeze(-1) * sampling_offsets # b n l 3 p2
-        sampling_points = sampling_offsets.unsqueeze(-2) + means3D.unsqueeze(-1)
-        sampling_points = rearrange(sampling_points, 'b n l d p1 p2 -> b n l (p1 p2) d')
-        sampling_features, sampling_points_cam_out = self.sampling(img_features, sampling_points, lidar2img)
+        rays = F.normalize(coords3d[..., 0, :], dim=-1)
+        rays = rearrange(rays, 'b n w h d -> (b n) (h w) d')
+        rays_embed = self.ray_embed(rays) # b (h w) d
 
-        # normalize
-        sampling_points_norm = sampling_points.clone()
-        sampling_points_norm[..., 0:1] = (sampling_points_norm[..., 0:1] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0])
-        sampling_points_norm[..., 1:2] = (sampling_points_norm[..., 1:2] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1])
-        sampling_points_norm[..., 2:3] = (sampling_points_norm[..., 2:3] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2])
-        sampling_points_norm = torch.clamp(sampling_points_norm, min=0.0, max=1.0)
-        pos_embed = self.positiona_encoding(sampling_points_norm)
-        sampling_features = sampling_features + pos_embed
+        features = self.cross_attn(features, rays_embed, rays_embed) # b (h w) d
+        features = rearrange(features, 'b (h w) d -> b d h w', h=h, w=w)
 
-        # sampling_features = self.mlp(sampling_features.flatten(-2,-1)) # b n l d
-        return sampling_features.flatten(1,2), sampling_points_cam_out, sampling_points.flatten(1,2)
+        out_features = self.feats_head(features)
+        depth = self.depth_head(features).softmax(1)
+        opacity = self.opacity_head(features).sigmoid()
+
+        means3D, cov3D = self.get_means_cov(depth, coords3d)
+
+        return out_features, means3D, cov3D, opacity
+    
+class AttentionBlock(nn.Module):
+    def __init__(self, embed_dims, num_heads, dropout):
+        super().__init__()
+        
+        self.attn = nn.MultiheadAttention(embed_dims, num_heads, dropout, batch_first=True)
+        self.mlp = MLP(embed_dims, embed_dims*4, embed_dims)
+        self.norm1 = nn.LayerNorm(embed_dims)
+        self.norm2 = nn.LayerNorm(embed_dims)
+        
+    def forward(self, src, k, v, q_pos_embed=None, k_pos_embed=None):
+        if q_pos_embed is not None:
+            q = src + q_pos_embed
+        else:
+            q = src
+
+        if k_pos_embed is not None:
+            k = k + k_pos_embed
+        src2 = self.attn(q, k, v)[0]
+        src = src + src2
+        src = self.norm1(src)
+        src = src + self.mlp(src)
+        src = self.norm2(src)
+
+        return src
+
+class PositionEmbeddingSine(nn.Module):
+    def __init__(
+        self, num_pos_feats=64, temperature=10000, normalize=False, scale=None
+    ):
+        super().__init__()
+        self.num_pos_feats = num_pos_feats
+        self.temperature = temperature
+        self.normalize = normalize
+        if scale is not None and normalize is False:
+            raise ValueError("normalize should be True if scale is passed")
+        if scale is None:
+            scale = 2 * math.pi
+        self.scale = scale
+
+    def forward(
+        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        if mask is None:
+            mask = torch.zeros(
+                (x.size(0), x.size(2), x.size(3)), device=x.device, dtype=torch.bool
+            )
+        not_mask = ~mask
+        y_embed = not_mask.cumsum(1, dtype=torch.float32)
+        x_embed = not_mask.cumsum(2, dtype=torch.float32)
+        if self.normalize:
+            eps = 1e-6
+            y_embed = y_embed / (y_embed[:, -1:, :] + eps) * self.scale
+            x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale
+
+        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
+        dim_t = self.temperature ** (
+            2 * torch.div(dim_t, 2, rounding_mode="floor") / self.num_pos_feats
+        )
+
+        pos_x = x_embed[:, :, :, None] / dim_t
+        pos_y = y_embed[:, :, :, None] / dim_t
+        pos_x = torch.stack(
+            (pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4
+        ).flatten(3)
+        pos_y = torch.stack(
+            (pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4
+        ).flatten(3)
+        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
+        return pos
+
+    def __repr__(self, _repr_indent=4):
+        head = "Positional encoding " + self.__class__.__name__
+        body = [
+            "num_pos_feats: {}".format(self.num_pos_feats),
+            "temperature: {}".format(self.temperature),
+            "normalize: {}".format(self.normalize),
+            "scale: {}".format(self.scale),
+        ]
+        # _repr_indent = 4
+        lines = [head] + [" " * _repr_indent + line for line in body]
+        return "\n".join(lines)
+    
+class CameraAwareEmbedding(nn.Module):
+    def __init__(self, img_h, img_w, feat_height, feat_width, embed_dims):
+        super().__init__()    
+        
+        scale = img_h // feat_height
+        coords_h = torch.linspace(scale // 2, img_h - scale//2, feat_height).float()
+        coords_w = torch.linspace(scale // 2, img_w - scale//2, feat_width).float()
+        image_plane = torch.stack(torch.meshgrid([coords_w, coords_h])).permute(0, 2, 1) # 2 h w
+        image_plane = torch.cat((image_plane, torch.ones_like(image_plane[0:1])), dim=0)[None, None] # 1 1 3 h w
+        self.register_buffer('image_plane', image_plane, persistent=False)
+        
+        self.img_embed = nn.Conv2d(4, embed_dims, 1, bias=False)
+        self.cam_embed = nn.Conv2d(4, embed_dims, 1, bias=False)
+        
+    def forward(self, I_inv, E_inv):
+        pixel = self.image_plane
+        h, w = pixel.shape[-2:]
+        
+        c = E_inv[..., -1:]                                                     # b n 4 1
+        c_flat = rearrange(c, 'b n ... -> (b n) ...')[..., None]                # (b n) 4 1 1
+        c_embed = self.cam_embed(c_flat)                                        # (b n) d 1 1
+
+        pixel_flat = rearrange(pixel, '... h w -> ... (h w)')                   # 1 1 3 (h w)
+        cam = I_inv @ pixel_flat                                                # b n 3 (h w)
+        cam = F.pad(cam, (0, 0, 0, 1, 0, 0, 0, 0), value=1)                     # b n 4 (h w)
+        d = E_inv @ cam                                                         # b n 4 (h w)
+        d_flat = rearrange(d, 'b n d (h w) -> (b n) d h w', h=h, w=w)           # (b n) 4 h w
+        d_embed = self.img_embed(d_flat)                                        # (b n) d h w
+        
+        img_embed = d_embed - c_embed                                           # (b n) d h w
+        img_embed = img_embed / (img_embed.norm(dim=1, keepdim=True) + 1e-7)    # (b n) d h w
+        
+        return img_embed
+
+def generate_rays(
+    camera_intrinsics, image_shape, feat_shape
+):
+    batch_size, device, dtype = (
+        camera_intrinsics.shape[0],
+        camera_intrinsics.device,
+        camera_intrinsics.dtype,
+    )
+    height, width = image_shape
+    feat_h, feat_w = feat_shape
+    scale = height // feat_h
+    # Generate grid of pixel coordinates
+    pixel_coords_x = torch.linspace(scale // 2, width - scale//2, feat_w, device=device, dtype=dtype)
+    pixel_coords_y = torch.linspace(scale // 2, height - scale//2, feat_h, device=device, dtype=dtype)
+
+    pixel_coords = torch.stack(
+        [pixel_coords_x.repeat(height, 1), pixel_coords_y.repeat(width, 1).t()], dim=2
+    )  # (H, W, 2)
+
+    # Calculate ray directions
+    intrinsics_inv = torch.eye(3, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
+    intrinsics_inv[:, 0, 0] = 1.0 / camera_intrinsics[:, 0, 0]
+    intrinsics_inv[:, 1, 1] = 1.0 / camera_intrinsics[:, 1, 1]
+    intrinsics_inv[:, 0, 2] = -camera_intrinsics[:, 0, 2] / camera_intrinsics[:, 0, 0]
+    intrinsics_inv[:, 1, 2] = -camera_intrinsics[:, 1, 2] / camera_intrinsics[:, 1, 1]
+    homogeneous_coords = torch.cat(
+        [pixel_coords, torch.ones_like(pixel_coords[:, :, :1])], dim=2
+    )  # (H, W, 3)
+    ray_directions = torch.matmul(
+        intrinsics_inv, homogeneous_coords.permute(2, 0, 1).flatten(1)
+    )  # (3, H*W)
+    ray_directions = F.normalize(ray_directions, dim=1)  # (B, 3, H*W)
+    ray_directions = ray_directions.permute(0, 2, 1)  # (B, H*W, 3)
+    return ray_directions
 
 def quaternion_to_rotation_matrix_batch(quaternions):
     """
@@ -1103,3 +961,121 @@ def compute_covariance_matrix_batch(quaternions, scales):
     L = R @ S 
     covariance_matrices = L @ L.transpose(-1, -2) # R S ST RT
     return covariance_matrices
+
+@torch.no_grad()
+def get_pixel_coords_3d(depth, lidar2img, img_h=224, img_w=480, depth_num=64, depth_start=1, depth_max=61):
+    eps = 1e-5
+    
+    B, N = lidar2img.shape[:2]
+    H, W = depth.shape[-2:]
+    scale = img_h // H
+    # coords_h = torch.linspace(scale // 2, img_h - scale//2, H, device=depth.device).float()
+    # coords_w = torch.linspace(scale // 2, img_w - scale//2, W, device=depth.device).float()
+    coords_h = torch.linspace(0, 1, H, device=depth.device).float() * img_h
+    coords_w = torch.linspace(0, 1, W, device=depth.device).float() * img_w
+    coords_d = get_bin_centers(depth_max, depth_start, depth_num).to(depth.device)
+
+    D = coords_d.shape[0]
+    coords = torch.stack(torch.meshgrid([coords_w, coords_h, coords_d])).permute(1, 2, 3, 0) # W, H, D, 3
+    coords = torch.cat((coords, torch.ones_like(coords[..., :1])), -1)
+    coords[..., :2] = coords[..., :2] * torch.maximum(coords[..., 2:3], torch.ones_like(coords[..., 2:3])*eps)
+    img2lidars = lidar2img.inverse() # b n 4 4
+
+    coords = coords.view(1, 1, W, H, D, 4, 1).repeat(B, N, 1, 1, 1, 1, 1)
+    img2lidars = img2lidars.view(B, N, 1, 1, 1, 4, 4).repeat(1, 1, W, H, D, 1, 1)
+    coords3d = torch.matmul(img2lidars, coords).squeeze(-1)[..., :3] # B N W H D 3
+
+    return coords3d, coords_d
+
+@torch.no_grad()
+def get_bin_centers(max_depth, min_depth, depth_num):
+    """
+    depth: b d h w
+    """
+    depth_range = max_depth - min_depth
+    interval = depth_range / depth_num
+    interval = interval * torch.ones((depth_num+1))
+    interval[0] = min_depth
+    # interval = torch.cat([torch.ones_like(depth) * min_depth, interval], 1)
+
+    bin_edges = torch.cumsum(interval, 0)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    return bin_centers
+
+class SELayer(nn.Module):
+
+    def __init__(self, channels, act_layer=nn.ReLU, gate_layer=nn.Sigmoid):
+        super().__init__()
+        self.conv_reduce = nn.Conv2d(channels, channels, 1, bias=True)
+        self.act1 = act_layer()
+        self.conv_expand = nn.Conv2d(channels, channels, 1, bias=True)
+        self.gate = gate_layer()
+
+    def forward(self, x, x_se):
+        x_se = self.conv_reduce(x_se)
+        x_se = self.act1(x_se)
+        x_se = self.conv_expand(x_se)
+        return x * self.gate(x_se)
+
+# class GaussianRendererOCC(nn.Module):
+#     def __init__(self, embed_dims):
+#         super().__init__()
+#         self.rasterizer = LocalAggregator(1, 200, 200, 8, [-50.0, -50.0, -4.0], torch.tensor([0.5, 0.5, 1.0]))
+#         self.embed_dims = embed_dims
+#         self.epsilon = 1e-4
+#         self.pc_range = [-50, -50, -4.0, 50, 50, 4.0]
+#         self.xyz = self.get_meshgrid(self.pc_range, [200, 200, 8], [0.5, 0.5, 1])
+#         self.flat = MLPConv2D(embed_dims*8, embed_dims)
+
+#     def get_meshgrid(self, ranges, grid, reso):
+#         xxx = torch.arange(grid[0], dtype=torch.float) * reso[0] + 0.5 * reso[0] + ranges[0]
+#         yyy = torch.arange(grid[1], dtype=torch.float) * reso[1] + 0.5 * reso[1] + ranges[1]
+#         zzz = torch.arange(grid[2], dtype=torch.float) * reso[2] + 0.5 * reso[2] + ranges[2]
+
+#         xxx = xxx[:, None, None].expand(*grid)
+#         yyy = yyy[None, :, None].expand(*grid)
+#         zzz = zzz[None, None, :].expand(*grid)
+
+#         xyz = torch.stack([
+#             xxx, yyy, zzz
+#         ], dim=-1)
+#         return xyz # x, y, z, 3
+
+#     def forward(self, features, means3D, cov3D, opacities):#, orth_features, orth_means):
+#         """
+#         features: b G d*stages
+#         means3D: b G 3
+#         uncertainty: b G 6
+#         opacities: b G 1*stages
+#         """ 
+#         b = features.shape[0]
+#         device = means3D.device
+#         opacities = opacities.squeeze(-1)
+        
+#         sampled_xyz = self.xyz.flatten(0, 2).to(device)
+#         scales = torch.cat((cov3D[..., 0:1], cov3D[..., 3:4], cov3D[..., 5:6]), dim=-1)
+#         bev_out = []
+#         for i in range(b):
+            
+#             mask = \
+#                 (means3D[i, :, 0] >= self.pc_range[0]) & (means3D[i, :, 0] < self.pc_range[3]) & \
+#                 (means3D[i, :, 1] >= self.pc_range[1]) & (means3D[i, :, 1] < self.pc_range[4]) & \
+#                 (means3D[i, :, 2] >= self.pc_range[2]) & (means3D[i, :, 2] < self.pc_range[5])
+
+#             rendered = self.rasterizer(
+#                 sampled_xyz.clone().float(), 
+#                 means3D[i][mask], 
+#                 opacities[i][mask].squeeze(-1),
+#                 features[i][mask],
+#                 scales[i][mask],
+#                 cov3D[i][mask]
+#             )
+#             # print("rendered", rendered.min(), rendered.max(), rendered.mean())
+#             rendered = torch.nan_to_num(rendered, posinf=0.0, neginf=0.0)
+#             rendered = rendered.reshape(200, 200, 8, 128).permute(2,3,1,0).flatten(0,1).flip(1).flip(2)
+#             bev_out.append(rendered)
+#         bev = torch.stack(bev_out, dim=0)
+#         print(bev.min(), bev.max(), bev.mean())
+#         bev = self.flat(bev)
+#         return bev, 1 # orthogonal_uncertainty

@@ -1,8 +1,10 @@
-_target_: cross_view_transformer.model.GaussianLSS.GaussianLSS
+_target_: cross_view_transformer.model.GaussianLSS.GaussianLSS # GaussianSpherical
 
 embed_dims: 128
 error_tolerance: 0.5
-orth_scale: 0.75
+num_stages: 3
+depth_num: 64
+opacity_filter: 0.0001
 
 backbone:
   _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV
@@ -27,27 +29,61 @@ neck:
     # in_channels: [32, 56, 160]
     mode: "doubleconv"
     tail_mode: "conv2d"
-    depth_num: 64
+    depth_num: ${model.depth_num}  
     opacity: True
-  
-  # list_output: True
+    # embed: 128
+    num_stages: 3
+    interm_c: 256
 
-decoder:
-  # _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
+# encoder:
+#   _target_: cross_view_transformer.model.sparsebev_seg.SegHead
+
+#   embed_dims: 128
+
+#   # bev
+#   H: 200
+#   W: 200
+#   Z: 8
+#   num_points_in_pillar: 8
+#   mode: grid # grid
+#   start_H: 200
+#   start_W: 200
+
+#   transformer:
+#     _target_: cross_view_transformer.model.sparsebev_seg.SegTransformerDecoder
+
+#     num_groups: 1
+#     pc_range: [-50.0, -50.0, -4.0, 50.0, 50.0, 4.0] # [-49.75, -49.75, -3.375, 49.75, 49.75, 5.375]
+
+#     embed_dims: ${model.encoder.embed_dims}
+#     num_levels: 1
+#     h: ${data.image.h}
+#     w: ${data.image.w}
+#     num_points: 8
+    # pos_encode: True
+
+# neck:
+#   _target_: cross_view_transformer.model.backbones.agp.GaussianNeck
+
+#   in_channels: [56, 160]
+#   depth_num: ${model.depth_num}  
+
+# decoder:
+#   _target_: cross_view_transformer.model.decoder.SimpleBEVDecoder
   # _target_: cross_view_transformer.model.decoder.BevEncode
   # in_channels: ${model.embed_dims}  
 
-  _target_: cross_view_transformer.model.sparse_resnet.SparseUNet
+  # _target_: cross_view_transformer.model.sparse_resnet.SparseUNet
 
-  in_c: ${model.embed_dims}
-  out_c: ${model.embed_dims}
+  # in_c: ${model.embed_dims}
+  # out_c: ${model.embed_dims}
 
 head:
   _target_: cross_view_transformer.model.decoder.SegHead
 
   dim_last: ${model.embed_dims} 
   multi_head: True
-  sparse: True
+  # sparse: True
 
   outputs:
     VEHICLE: [0, 1]

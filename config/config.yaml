@@ -60,3 +60,5 @@ trainer:
   sync_batchnorm: False
   # deterministic: False
   # accumulate_grad_batches: 2
+
+min_visibility: 0

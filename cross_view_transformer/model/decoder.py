@@ -232,7 +232,7 @@ class Up(nn.Module):
         super().__init__()
 
         self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear',
-                              align_corners=True)
+                              align_corners=False)
 
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),

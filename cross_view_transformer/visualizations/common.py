@@ -190,7 +190,8 @@ class BaseViz:
 
         # pre = pre.cpu().numpy()
         # pre = pre.astype(np.uint8)
-        pred = pred * mask
+        if mask is not None:
+            pred = pred * mask
         pred_vis = pred.squeeze(0).cpu().numpy() * 255
         pred_vis = pred_vis.astype(np.uint8)
         pred_vis = colorize(pred_vis)
