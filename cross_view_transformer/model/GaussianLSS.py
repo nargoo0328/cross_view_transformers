@@ -20,7 +20,7 @@ from .decoder import BEVDecoder, DecoderBlock, UpsamplingAdd
 # from .simple_bev import SimpleBEVDecoderLayer_pixel
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from typing import Optional
-from torchvision.models.resnet import Bottleneck
+from torchvision.models.resnet import BasicBlock
 
 class GaussianLSS(nn.Module):
     def __init__(
@@ -245,40 +245,24 @@ class GaussianRenderer(nn.Module):
         #     nn.GELU(),
         #     nn.Conv2d(embed_dims, embed_dims, kernel_size=1),
         # )
-        # self.bev_embedding =  nn.Embedding(h * w, self.embed_dims)
-        # self.conv1 = nn.ModuleList(
-        #     [
-        #         nn.Sequential(
-        #             nn.Conv2d(embed_dims, embed_dims*2, kernel_size=3, padding=1, bias=False),
-        #             nn.GELU(),
-        #             nn.Conv2d(embed_dims*2, embed_dims, kernel_size=3, padding=1, bias=False),
-        #     ) for i in range(num_stages)
-        #     ]
-        # )
-        # self.conv2 = nn.ModuleList(
-        #     [
-        #         nn.Sequential(
-        #             nn.Conv2d(embed_dims, embed_dims*2, kernel_size=3, padding=1),
-        #             nn.InstanceNorm2d(embed_dims),
-        #             nn.GELU(),
-        #             nn.Conv2d(embed_dims*2, embed_dims, kernel_size=3, padding=1),
-        #             # nn.InstanceNorm2d(embed_dims),
-        #             # nn.GELU(),
-        #             # nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1)
-        #     ) for i in range(num_stages)
-        #     ]
-        # )
-        # self.decoder = nn.ModuleList(
-        #     [UpsamplingAdd(embed_dims, embed_dims) for i in range(num_stages-1)]
-        # )
-        self.upsample = nn.ModuleList(UpsampleBlock(embed_dims, embed_dims, 2**(num_stages-1-i)) for i in range(num_stages-1))
-        self.conv = nn.Sequential(
-            nn.Conv2d(embed_dims*num_stages, embed_dims*2, 3, padding=1),
-            nn.GELU(),
-            Bottleneck(embed_dims*2, embed_dims//2),
-            Bottleneck(embed_dims*2, embed_dims//2),
-            Bottleneck(embed_dims*2, embed_dims//2),
-            nn.Conv2d(embed_dims*2, embed_dims, 1),
+        self.bev_embedding =  nn.Embedding(h * w, self.embed_dims)
+        self.conv1 = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv2d(embed_dims, embed_dims, kernel_size=3, padding=1, bias=False),
+            ) for i in range(num_stages)
+            ]
+        )
+        self.conv2 = nn.ModuleList(
+            [
+                nn.Sequential(
+                    BasicBlock(embed_dims, embed_dims),
+                    BasicBlock(embed_dims, embed_dims),
+            ) for i in range(num_stages)
+            ]
+        )
+        self.decoder = nn.ModuleList(
+            [UpsamplingAdd(embed_dims, embed_dims) for i in range(num_stages-1)]
         )
         self.pc_range = [-50, -50, -4, 50, 50, 4]
 
@@ -293,10 +277,10 @@ class GaussianRenderer(nn.Module):
         device = means3D.device
         
         # filter pc range
-        mask_pos = (means3D[:, :, 2] >= self.pc_range[2]) & (means3D[:, :, 2] <= self.pc_range[5])
-                # (means3D[:, :, 0] >= self.pc_range[0]) & (means3D[:, :, 0] <= self.pc_range[3]) & \
-                # (means3D[:, :, 1] >= self.pc_range[1]) & (means3D[:, :, 1] <= self.pc_range[4]) & \
-                # (means3D[:, :, 2] >= self.pc_range[2]) & (means3D[:, :, 2] <= self.pc_range[5])
+        mask_pos = \
+                (means3D[:, :, 0] >= self.pc_range[0]) & (means3D[:, :, 0] <= self.pc_range[3]) & \
+                (means3D[:, :, 1] >= self.pc_range[1]) & (means3D[:, :, 1] <= self.pc_range[4]) & \
+                (means3D[:, :, 2] >= self.pc_range[2]) & (means3D[:, :, 2] <= self.pc_range[5])
         # mask = (opacities > self.threshold)
         # mask = mask.squeeze(-1)
         # mask = mask | mask_pos
@@ -318,8 +302,8 @@ class GaussianRenderer(nn.Module):
         #     )
         #     bev_out.append(rendered_bev)
             
-        # bev_emdding = repeat(self.bev_embedding.weight, '... -> b ...', b=b)
-        # bev_emdding = rearrange(bev_emdding, 'b (h w) d -> b d h w', h=self.h, w=self.w)
+        bev_emdding = repeat(self.bev_embedding.weight, '... -> b ...', b=b)
+        bev_emdding = rearrange(bev_emdding, 'b (h w) d -> b d h w', h=self.h, w=self.w)
         # features = torch.split(features, self.embed_dims, dim=-1)
         num_gaussians = 0.0
         multi_scale_bev = []
@@ -347,22 +331,17 @@ class GaussianRenderer(nn.Module):
                 )
                 bev_out.append(rendered_bev)
 
-            bev_out = torch.stack(bev_out, dim=0)
-            if stage < self.num_stages-1:
-                bev_out = self.upsample[stage](bev_out)
-            multi_scale_bev.append(bev_out)
+            multi_scale_bev.append(torch.stack(bev_out, dim=0))
             num_gaussians += (mask.detach().float().sum(1)).mean().cpu()
 
-        x = torch.cat(multi_scale_bev, dim=1)
-        x = self.conv(x)
-        # x = bev_emdding
-        # for i, bev in enumerate(multi_scale_bev):
-        #     bev = self.conv1[i](bev)
-        #     if i-1 >=0:
-        #         x = self.decoder[i-1](x, bev)
-        #     else:
-        #         x = x + bev
-        #     x = self.conv2[i](x)
+        x = bev_emdding
+        for i, bev in enumerate(multi_scale_bev):
+            bev = self.conv1[i](bev)
+            if i-1 >=0:
+                x = self.decoder[i-1](x, bev)
+            else:
+                x = x + bev
+            x = self.conv2[i](x)
 
         return x, num_gaussians
         
@@ -648,23 +627,6 @@ class GaussianUpdateLayer(nn.Module):
         # cov3D = cov3D + compute_covariance_matrix_batch(rotation_delta, scales_delta)
 
         return features, means3D, cov3D, sampling_points_cam
-
-class UpsampleBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, scale_factor):
-        super(UpsampleBlock, self).__init__()
-        self.scale_factor = scale_factor
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.norm = nn.LayerNorm(out_channels)  # Optional: use if appropriate
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        x = F.interpolate(x, scale_factor=self.scale_factor, mode='bilinear', align_corners=False)
-        x = self.conv(x)
-        x = rearrange(x, 'b d h w -> b h w d')
-        x = self.norm(x)
-        x = rearrange(x, 'b h w d -> b d h w ')
-        x = self.relu(x)
-        return x
 
 class MLPConv2D(nn.Module):
     def __init__(self, embed_dims, out_dims):

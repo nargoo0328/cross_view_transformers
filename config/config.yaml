@@ -21,7 +21,7 @@ experiment:
 loader:
   train_batch_size: 4 # 8x3
   val_batch_size: 4
-  num_workers: 12 # 4
+  num_workers: 4 # 4
   pin_memory: True
   prefetch_factor: 2
 
