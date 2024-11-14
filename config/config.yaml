@@ -61,4 +61,4 @@ trainer:
   # deterministic: False
   # accumulate_grad_batches: 2
 
-min_visibility: 0
+min_visibility: 2

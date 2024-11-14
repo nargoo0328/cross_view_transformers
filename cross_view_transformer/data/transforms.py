@@ -554,28 +554,26 @@ class LoadDataTransform(torchvision.transforms.ToTensor):
             points = (V @ points)[:2]
             cv2.fillPoly(bev[class_idx], [points.round().astype(np.int32).T], 1, INTERPOLATION)
 
-            # ignore pedestrians
-            if class_idx != 5: 
-                # center, offsets, height
-                homog_points = np.ones((4, 1))
-                homog_points[:3, :] = center
-                homog_points[-1, :] = 1
-                center = self._prepare_augmented_boxes(bev_augm, homog_points).astype(np.float32)
-                center[2] = 1 # add 1 for next matrix matmul
-                center = (V @ center)[:2, 0].astype(np.float32) # squeeze 1
+            # center, offsets, height
+            homog_points = np.ones((4, 1))
+            homog_points[:3, :] = center
+            homog_points[-1, :] = 1
+            center = self._prepare_augmented_boxes(bev_augm, homog_points).astype(np.float32)
+            center[2] = 1 # add 1 for next matrix matmul
+            center = (V @ center)[:2, 0].astype(np.float32) # squeeze 1
 
-                buf.fill(0)
-                cv2.fillPoly(buf, [points.round().astype(np.int32).T], 1, INTERPOLATION)
-                mask = buf > 0
-                # center_offset[mask] = center[None] - coords[mask]
-                center_off = center[None] - coords
-                center_offset[mask] = center_off[mask]
-                g = np.exp(-(center_off ** 2).sum(-1) / (2 * sigma ** 2))
-                center_score = np.maximum(center_score, g)
-                # center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
-                
-                # visibility
-                visibility[mask] = visibility_token
+            buf.fill(0)
+            cv2.fillPoly(buf, [points.round().astype(np.int32).T], 1, INTERPOLATION)
+            mask = buf > 0
+            # center_offset[mask] = center[None] - coords[mask]
+            center_off = center[None] - coords
+            center_offset[mask] = center_off[mask]
+            g = np.exp(-(center_off ** 2).sum(-1) / (2 * sigma ** 2))
+            center_score = np.maximum(center_score, g)
+            # center_score[mask] = np.exp(-(center_offset[mask] ** 2).sum(-1) / (2 * sigma ** 2))
+            
+            # visibility
+            visibility[mask] = visibility_token
 
             # x1 = np.min(points[0])
             # x2 = np.max(points[0])
@@ -893,3 +891,251 @@ class LoadDataTransform_DepthAnything:
         sample_images, sample_depths, valid_masks = torch.stack(sample_images), torch.stack(sample_depths), torch.stack(valid_masks)
     
         return {'image': sample_images, 'depth':sample_depths, 'valid_mask': valid_masks}
+    
+class LoadMap(torchvision.transforms.ToTensor):
+    def __init__(self, 
+                dataset_dir, 
+                labels_dir, 
+                image_config, 
+                num_classes, 
+                image_data=True, 
+                augment_img=False, 
+                augment_bev=False, 
+                no_class=False, 
+                img_params=None, 
+                bev_aug_conf=None, 
+                training=True, 
+                box_3d=True, 
+                bev=True,
+                **kwargs
+        ):
+        super().__init__()
+        assert box in ['', 'gt', 'pseudo']
+        assert depth in ['', 'generate', 'generated']
+
+        self.dataset_dir = pathlib.Path(dataset_dir)
+        self.labels_dir = pathlib.Path(labels_dir)
+        self.image_config = image_config
+        self.num_classes = num_classes
+        self.image_data = image_data
+        self.lidar = lidar
+        self.bev = bev
+        self.depth = depth
+        self.box = box
+        self.orientation = orientation
+        self.no_class = no_class
+        self.box_3d = box_3d
+        self.split_intrin_extrin = split_intrin_extrin
+        self.img_transform = torchvision.transforms.ToTensor()
+
+        self.training = training
+        self.augment_img = RandomTransformImage(img_params, training) if augment_img else None
+        self.augment_bev = RandomTransformationBev(bev_aug_conf, training) if augment_bev else None
+
+        self.to_tensor = super().__call__
+
+    def get_cameras(self, sample: Sample, h, w, top_crop):
+        """
+        Note: we invert I and E here for convenience.
+        """
+        images = list()
+        intrinsics = list()
+        lidar2img = list()
+        depths = list()
+
+        for image_path, I_original, extrinsic in zip(sample.images, sample.intrinsics, sample.extrinsics):
+            h_resize = h + top_crop
+            w_resize = w
+
+            image = Image.open(self.dataset_dir / image_path)
+            image_new = image.resize((w_resize, h_resize), resample=Image.BILINEAR)
+            image_new = image_new.crop((0, top_crop, image_new.width, image_new.height))
+            images.append(self.img_transform(image_new))
+
+            I = np.float32(I_original)
+            I[0, 0] *= w_resize / image.width
+            I[0, 2] *= w_resize / image.width
+            I[1, 1] *= h_resize / image.height
+            I[1, 2] *= h_resize / image.height
+            I[1, 2] -= top_crop
+            extrinsic = np.float32(extrinsic)
+            
+            if not self.split_intrin_extrin:
+                viewpad = np.float32(np.eye(4))
+                viewpad[:I.shape[0], :I.shape[1]] = I
+                lidar2img.append(torch.tensor(viewpad @ extrinsic))
+            else:
+                intrinsics.append(torch.tensor(I))
+            
+            depth_path = image_path.replace('samples', 'depths')
+            if self.depth == 'generate':
+                depths.append(self.dataset_dir / depth_path)
+            elif self.depth == 'generated':
+                depth = Image.open(self.dataset_dir / depth_path)
+                depth_new = depth.resize((w_resize, h_resize), resample=Image.BILINEAR)
+                depth_new = depth_new.crop((0, top_crop, depth_new.width, depth_new.height))
+                depths.append(self.img_transform(depth_new))
+
+        result = {
+            'cam_idx': torch.LongTensor(sample.cam_ids),
+            'image': torch.stack(images, 0),
+        }
+
+        sensor = {}
+        if not self.split_intrin_extrin:
+            sensor = {
+                'lidar2img': torch.stack(lidar2img, 0),
+            }
+        else:
+            sensor = {
+                'intrinsics': torch.stack(intrinsics, 0),
+                'extrinsics': torch.tensor(np.float32(sample.extrinsics)),
+            }
+
+        result.update(sensor)
+
+        if self.depth == 'generate':
+            result['depth'] = depths
+        elif self.depth == 'generated':
+            result['depth'] = torch.stack(depths, 0) * 255
+    
+        return result
+    
+    def get_cameras_augm(self, sample: Sample, **kwargs):
+        images = list()
+        intrinsics = list()
+        extrinsics = list()
+        depths = list()
+
+        for image_path, intrinsic, extrinsic in zip(sample.images, sample.intrinsics, sample.extrinsics):
+            image = Image.open(self.dataset_dir / image_path)
+            images.append(image)
+
+            if self.depth:
+                depth_path = image_path.replace('samples', 'depths')
+                depth = Image.open(self.dataset_dir / depth_path)
+                depths.append(depth)
+
+            intrinsic = np.float32(intrinsic)
+            extrinsic = np.float32(extrinsic)
+            intrinsics.append(intrinsic)
+            extrinsics.append(torch.tensor(extrinsic))
+
+        result = {'image': images}
+        result.update({'intrinsics':intrinsics, 'extrinsics':extrinsics})
+
+        if self.depth:
+            result['depth'] = depths
+
+        result = self.augment_img(result)
+        result['image'] = torch.stack(result['image'], 0)
+        if self.depth:
+            result['depth'] = torch.stack(result['depth'], 0) * 255 / 80 * 61.2
+        result['intrinsics'] = torch.stack(result['intrinsics'], 0)
+        result['extrinsics'] = torch.stack(result['extrinsics'], 0)
+
+        lidar2img = list()
+        for intrinsic,  extrinsic in zip(result['intrinsics'], result['extrinsics']):
+            viewpad = torch.eye(4, dtype=torch.float32)
+            viewpad[:intrinsic.shape[0], :intrinsic.shape[1]] = intrinsic
+            lidar2img.append(viewpad @ extrinsic)
+        result['lidar2img'] = torch.stack(lidar2img, 0)
+
+        result['cam_idx'] = torch.LongTensor(sample.cam_ids)
+
+        return result
+
+    def get_bev(self, sample: Sample):
+        scene_dir = self.labels_dir / sample.scene
+        bev = None
+
+        if sample.bev is not None:
+            bev = Image.open(scene_dir / sample.bev)
+            bev = decode(bev, self.num_classes)
+            bev = (255 * bev).astype(np.uint8)
+            bev = self.to_tensor(bev)
+
+        result = {
+            'bev': bev,
+        }
+
+        if 'visibility' in sample:
+            visibility = Image.open(scene_dir / sample.visibility)
+            result['visibility'] = np.array(visibility, dtype=np.uint8)
+
+        if 'visibility_ped' in sample:
+            visibility = Image.open(scene_dir / sample.visibility_ped)
+            result['visibility_ped'] = np.array(visibility, dtype=np.uint8)
+
+        if 'aux' in sample:
+            aux = np.load(scene_dir / sample.aux)['aux']
+            result['segmentation'] = self.to_tensor(aux[..., 0])
+            result['center'] = self.to_tensor(aux[..., 1])
+            result['offset'] = self.to_tensor(aux[..., 2:4])
+            result['hw'] = self.to_tensor(aux[..., -2:])
+
+        if 'aux_ped' in sample:
+            aux_ped = np.load(scene_dir / sample.aux_ped)['aux_ped']
+            result['center_ped'] = self.to_tensor(aux_ped[..., 1])
+
+        if 'pose' in sample:
+            result['pose'] = np.float32(sample['pose'])  
+
+        if 'pose_inverse' in sample:
+            result['pose_inverse'] = np.float32(sample['pose_inverse'])        
+
+        # if 'lidar' in sample:
+        #     lidar = np.load(scene_dir / sample.lidar) # 16
+        #     lidar = lidar['lidar'].astype(np.float32)
+        #     lidar = torch.from_numpy(lidar).permute(2,0,1)
+        #     # n_pts = radar.shape[-1]
+        #     # if n_pts<MAX_PTS:
+        #     #     radar = F.pad(radar, (0, MAX_PTS-n_pts), value=0)
+        #     # else:
+        #     #     radar = radar[...,:MAX_PTS]
+
+        #     result['lidar'] = lidar
+
+        result['token'] = sample['token']
+        return result
+    
+    def __call__(self, batch):
+        if not isinstance(batch, Sample):
+            batch = Sample(**batch)
+        
+        result = dict()
+        result['view'] = torch.tensor(batch.view)
+
+        if self.image_data:
+            get_cameras = self.get_cameras_augm if self.augment_img is not None else self.get_cameras 
+            result.update(get_cameras(batch, **self.image_config))
+        
+        bev_augm = torch.eye(4)
+        if self.bev:
+            if self.augment_bev is not None:
+                result.update({'bev': torch.zeros((15,200,200))})
+                result.update({'token': batch['token']})
+                bev_augm = self.augment_bev()
+                augm_bev_gt, augm_center_score, augm_center_offset, visibility = self.get_bev_from_gtbbox(batch, bev_augm)
+
+                result['bev'][4:13] = augm_bev_gt
+                result['center'] = augm_center_score
+                result['offset'] = augm_center_offset
+                result['visibility'] = visibility
+
+
+                bev_augm = torch.from_numpy(bev_augm)
+                result['extrinsics'] = result['extrinsics'] @ bev_augm
+                result['lidar2img'] = result['lidar2img'] @ bev_augm
+                result['bev_augm'] = bev_augm
+                # result = self._parse_bev_augm(result, bev_augm)
+                # result['bev_augm'] = bev_augm
+            else:
+                result.update(self.get_bev(batch))
+
+
+        if self.lidar:
+            pts = self.get_lidar(batch)
+            result.update(self.get_depth(result, pts, bev_augm))
+
+        return result

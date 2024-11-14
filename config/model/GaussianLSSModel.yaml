@@ -5,6 +5,8 @@ error_tolerance: 0.5
 num_stages: 3
 depth_num: 64
 opacity_filter: 0.0001
+img_h: ${data.image.h}
+img_w: ${data.image.w}
 
 backbone:
   _target_: cross_view_transformer.model.backbones.efficientnet.EfficientNet_PointBEV

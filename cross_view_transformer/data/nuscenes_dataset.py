@@ -191,7 +191,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
         world_from_egolidarflat = self.parse_pose(egolidar, flat=True)
         egolidarflat_from_world = self.parse_pose(egolidar, flat=True, inv=True)
 
-        cam_channels = []
+        # cam_channels = []
         images = []
         intrinsics = []
         extrinsics = []
@@ -213,7 +213,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
             full_path = Path(self.nusc.get_sample_data_path(cam_token))
             image_path = str(full_path.relative_to(self.nusc.dataroot))
 
-            cam_channels.append(cam_channel)
+            # cam_channels.append(cam_channel)
             intrinsics.append(I)
             extrinsics.append(E.tolist())
             images.append(image_path)
@@ -228,8 +228,8 @@ class NuScenesDataset(torch.utils.data.Dataset):
             'pose': world_from_egolidarflat.tolist(),
             'pose_inverse': egolidarflat_from_world.tolist(),
             'lidar_record': egolidar,
-            'cam_ids': list(camera_rig),
-            'cam_channels': cam_channels,
+            # 'cam_ids': list(camera_rig),
+            # 'cam_channels': cam_channels,
             'intrinsics': intrinsics,
             'extrinsics': extrinsics,
             'images': images,
@@ -343,29 +343,6 @@ class NuScenesDataset(torch.utils.data.Dataset):
             [0, 1, 0, 0],
             [0, 0, 0, 1],
         ])
-
-        # box_coords = (sample['pose'][0][-1] - patch_radius, sample['pose'][1][-1] - patch_radius,
-        #               sample['pose'][0][-1] + patch_radius, sample['pose'][1][-1] + patch_radius)
-        # records_in_patch = self.nusc_map.get_records_in_patch(box_coords, layers, 'intersect')
-
-        # result = list()
-
-        # for layer in layers:
-        #     render = np.zeros((h, w), dtype=np.uint8)
-
-        #     for r in records_in_patch[layer]:
-        #         polygon_token = self.nusc_map.get(layer, r)
-        #         line = self.nusc_map.extract_line(polygon_token['line_token'])
-
-        #         p = np.float32(line.xy)                                     # 2 n
-        #         p = np.pad(p, ((0, 1), (0, 0)), constant_values=0.0)        # 3 n
-        #         p = np.pad(p, ((0, 1), (0, 0)), constant_values=1.0)        # 4 n
-        #         p = V @ S @ M_inv @ p                                       # 3 n
-        #         p = p[:2].round().astype(np.int32).T                        # n 2
-
-        #         cv2.polylines(render, [p], False, 1, thickness=thickness)
-
-        #     result.append(render)
 
         lidar2global = (V @ S @ M_inv)
         rotation = lidar2global[:3, :3]

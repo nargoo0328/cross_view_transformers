@@ -41,6 +41,8 @@ class GaussianLSS(nn.Module):
             orth_scale=0.05,
             depth_num=64,
             opacity_filter=0.05,
+            img_h=224,
+            img_w=480,
     ):
         super().__init__()
     
@@ -61,6 +63,8 @@ class GaussianLSS(nn.Module):
         self.bev_refine = encoder
     
         self.error_tolerance = error_tolerance
+        self.img_h = img_h
+        self.img_w = img_w
         # self.fusion = nn.Sequential(
         #     nn.Conv2d(embed_dims*2, embed_dims, kernel_size=3, padding=1),
         #     nn.InstanceNorm2d(embed_dims),
@@ -78,7 +82,7 @@ class GaussianLSS(nn.Module):
     def pred_depth(self, lidar2img, depth, coords_3d=None):
         # b, n, c, h, w = depth.shape
         if coords_3d is None:
-            coords_3d, coords_d = get_pixel_coords_3d(depth, lidar2img, depth_num=self.depth_num) # b n w h d 3
+            coords_3d, coords_d = get_pixel_coords_3d(depth, lidar2img, depth_num=self.depth_num, img_h=self.img_h, img_w=self.img_w) # b n w h d 3
             coords_3d = rearrange(coords_3d, 'b n w h d c -> (b n) d h w c')
             
         direction_vector = F.normalize((coords_3d[:, 1] - coords_3d[:, 0]), dim=-1) # (b n) h w c
